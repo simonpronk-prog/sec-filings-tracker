@@ -239,7 +239,7 @@ Respond in JSON format:
   }
 
   // Main method to analyze a filing with multiple AIs
-  async analyzeFiling(filingText, company, formType, aiPreferences = null) {
+  async analyzeFiling(filingText, company, formType, ticker, aiPreferences = null) {
     console.log(`🤖 Analyzing ${formType} filing for ${company}...`);
     
     // Skip low-priority filings to save API costs
