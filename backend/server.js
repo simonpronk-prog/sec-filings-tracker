@@ -14,7 +14,7 @@ const aiAnalysis = require('./services/aiAnalysis');
 const shortInterest = require('./services/shortInterest');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 // Database connection
 const pool = new Pool({
@@ -316,7 +316,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
         if (priority.level === 'high' && ticker) {
           console.log(`🤖 Analyzing ${filing.formType} for ${filing.company}...`);
           
-          // Fetch filing text
+          // Fetch filing text using VERSION 2.0 parser
           try {
             const filingText = await secEdgar.parseFilingContent(
               filing.accessionNumber,
@@ -462,7 +462,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: false, gemini: true, grok: false };
 
-    // Fetch filing text
+    // Fetch filing text using VERSION 2.0 parser
     const filingText = await secEdgar.parseFilingContent(
       filing.accession_number,
       filing.cik,
