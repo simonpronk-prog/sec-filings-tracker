@@ -7,10 +7,28 @@ class AIAnalysisService {
     this.grokKey = process.env.GROK_API_KEY;
   }
 
+  // Get filing priority information
+  getFilingPriority(formType) {
+    const priorities = {
+      '10-K': { level: 'high', emoji: '🔴', description: 'Annual Report - Comprehensive financial update' },
+      '10-Q': { level: 'high', emoji: '🔴', description: 'Quarterly Report - Financial update' },
+      '8-K': { level: 'high', emoji: '🔴', description: 'Current Report - Major company events' },
+      'S-1': { level: 'high', emoji: '🔴', description: 'IPO Registration - Company going public' },
+      'S-4': { level: 'medium', emoji: '🟡', description: 'Merger/Acquisition Registration' },
+      'DEF 14A': { level: 'medium', emoji: '🟡', description: 'Proxy Statement - Shareholder voting' },
+      '4': { level: 'low', emoji: '🟢', description: 'Insider Trade - Executives buying/selling' },
+      '3': { level: 'low', emoji: '🟢', description: 'Initial Insider Ownership' },
+      'SC 13G': { level: 'low', emoji: '🟢', description: 'Large Shareholder Disclosure' },
+      'SC 13D': { level: 'medium', emoji: '🟡', description: 'Activist Investor Disclosure' }
+    };
+
+    return priorities[formType] || { level: 'low', emoji: '⚪', description: formType };
+  }
+
   // Determine if filing is important enough to analyze
   isHighPriorityFiling(formType) {
-    const highPriority = ['10-K', '10-Q', '8-K', 'S-1', 'S-4', 'DEF 14A'];
-    return highPriority.includes(formType);
+    const priority = this.getFilingPriority(formType);
+    return priority.level === 'high';
   }
 
   // Analyze filing with Claude (Anthropic)
