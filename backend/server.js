@@ -318,7 +318,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
           
           // Fetch filing text
           try {
-            const filingText = await secEdgar.getFilingText(
+            const filingText = await secEdgar.parseFilingContent(
               filing.accessionNumber,
               filing.cik,
               filing.primaryDocument
@@ -463,7 +463,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: false, gemini: true, grok: false };
 
     // Fetch filing text
-    const filingText = await secEdgar.getFilingText(
+    const filingText = await secEdgar.parseFilingContent(
       filing.accession_number,
       filing.cik,
       filing.primary_document
