@@ -1,4 +1,3 @@
-// services/aiAnalysis.js - Multi-AI Sentiment Analysis for SEC Filings
 const fetch = require('node-fetch');
 
 class AIAnalysisService {
@@ -10,26 +9,8 @@ class AIAnalysisService {
 
   // Determine if filing is important enough to analyze
   isHighPriorityFiling(formType) {
-    const highPriority = ['10-K', '10-Q', '8-K', 'DEF 14A', '13F-HR', 'SC 13D', 'SC 13G'];
+    const highPriority = ['10-K', '10-Q', '8-K', 'S-1', 'S-4', 'DEF 14A'];
     return highPriority.includes(formType);
-  }
-
-  // Get filing priority level and description
-  getFilingPriority(formType) {
-    const priorities = {
-      '10-K': { level: 'high', emoji: '🔴', description: 'Annual Report - Complete financials' },
-      '10-Q': { level: 'high', emoji: '🔴', description: 'Quarterly Report - Financial update' },
-      '8-K': { level: 'high', emoji: '🔴', description: 'Current Report - Major company events' },
-      'DEF 14A': { level: 'medium', emoji: '🟡', description: 'Proxy Statement - Shareholder voting' },
-      '13F-HR': { level: 'medium', emoji: '🟡', description: 'Institutional Holdings - Big money moves' },
-      'SC 13D': { level: 'medium', emoji: '🟡', description: 'Major Shareholder - Someone bought >5%' },
-      'SC 13G': { level: 'medium', emoji: '🟡', description: 'Passive Ownership - >5% stake disclosed' },
-      '4': { level: 'low', emoji: '🟢', description: 'Insider Trade - Executives buying/selling' },
-      '3': { level: 'low', emoji: '🟢', description: 'Initial Insider Ownership' },
-      '5': { level: 'low', emoji: '🟢', description: 'Annual Insider Update' },
-    };
-    
-    return priorities[formType] || { level: 'low', emoji: '⚪', description: formType };
   }
 
   // Analyze filing with Claude (Anthropic)
@@ -40,29 +21,26 @@ class AIAnalysisService {
     }
 
     try {
-      const prompt = `You are a financial analyst expert. Analyze this SEC ${formType} filing for ${company} and provide:
+      const prompt = `You are a financial analyst. Analyze this ${formType} filing for ${company}.
 
-1. A brief 2-3 sentence summary of what happened
-2. A detailed "what happened" explanation (4-5 sentences)
-3. Expected stock price impact (bullish/bearish/neutral)
-4. Expected price move percentage (e.g., +2.5%, -1.2%)
-5. Confidence level (0-100)
-6. Key bullish factors (list)
-7. Key bearish/risk factors (list)
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-Filing excerpt (first 8000 chars):
-${filingText.substring(0, 8000)}
+Provide:
+1. Overall sentiment (bullish/bearish/neutral)
+2. Key highlights (3-5 points)
+3. Risk factors (2-3 points)
+4. Stock price prediction (confidence level 0-100, predicted change -100 to +100)
 
-Respond ONLY with valid JSON in this exact format:
+Respond in JSON format:
 {
-  "brief_summary": "2-3 sentence summary",
-  "detailed_summary": "4-5 sentence detailed explanation",
-  "sentiment": "bullish" | "bearish" | "neutral",
-  "expected_move": 2.5,
+  "sentiment": "bullish/bearish/neutral",
   "confidence": 85,
-  "bullish_factors": ["factor 1", "factor 2"],
-  "bearish_factors": ["risk 1", "risk 2"],
-  "reasoning": "Why this direction and magnitude"
+  "predicted_change": 5.2,
+  "key_highlights": ["point1", "point2"],
+  "bullish_factors": ["factor1", "factor2"],
+  "bearish_factors": ["risk1", "risk2"],
+  "reasoning": "explanation"
 }`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -74,7 +52,7 @@ Respond ONLY with valid JSON in this exact format:
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
+          max_tokens: 1024,
           messages: [{
             role: 'user',
             content: prompt
@@ -89,7 +67,7 @@ Respond ONLY with valid JSON in this exact format:
       const data = await response.json();
       const text = data.content[0].text;
       
-      // Extract JSON from response (remove markdown code blocks if present)
+      // Extract JSON from response
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('No JSON found in Claude response');
@@ -115,17 +93,23 @@ Respond ONLY with valid JSON in this exact format:
     }
 
     try {
-      const prompt = `You are a financial analyst. Analyze this SEC ${formType} filing for ${company}.
+      const prompt = `You are a financial analyst. Analyze this ${formType} filing for ${company}.
 
-Filing excerpt: ${filingText.substring(0, 8000)}
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-Respond ONLY with valid JSON:
+Provide:
+1. Overall sentiment (bullish/bearish/neutral)
+2. Key highlights (3-5 points)
+3. Risk factors (2-3 points)
+4. Stock price prediction (confidence level 0-100, predicted change -100 to +100)
+
+Respond in JSON format:
 {
-  "brief_summary": "2-3 sentence summary",
-  "detailed_summary": "4-5 sentence explanation",
-  "sentiment": "bullish" | "bearish" | "neutral",
-  "expected_move": 2.5,
+  "sentiment": "bullish/bearish/neutral",
   "confidence": 85,
+  "predicted_change": 5.2,
+  "key_highlights": ["point1", "point2"],
   "bullish_factors": ["factor1", "factor2"],
   "bearish_factors": ["risk1", "risk2"],
   "reasoning": "explanation"
@@ -148,6 +132,7 @@ Respond ONLY with valid JSON:
       const data = await response.json();
       const text = data.candidates[0].content.parts[0].text;
       
+      // Extract JSON from response
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('No JSON found in Gemini response');
@@ -173,17 +158,23 @@ Respond ONLY with valid JSON:
     }
 
     try {
-      const prompt = `You are a financial analyst. Analyze this SEC ${formType} filing for ${company}.
+      const prompt = `You are a financial analyst. Analyze this ${formType} filing for ${company}.
 
-Filing excerpt: ${filingText.substring(0, 8000)}
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-Respond ONLY with valid JSON:
+Provide:
+1. Overall sentiment (bullish/bearish/neutral)
+2. Key highlights (3-5 points)
+3. Risk factors (2-3 points)
+4. Stock price prediction (confidence level 0-100, predicted change -100 to +100)
+
+Respond in JSON format:
 {
-  "brief_summary": "2-3 sentence summary",
-  "detailed_summary": "4-5 sentence explanation",
-  "sentiment": "bullish" | "bearish" | "neutral",
-  "expected_move": 2.5,
+  "sentiment": "bullish/bearish/neutral",
   "confidence": 85,
+  "predicted_change": 5.2,
+  "key_highlights": ["point1", "point2"],
   "bullish_factors": ["factor1", "factor2"],
   "bearish_factors": ["risk1", "risk2"],
   "reasoning": "explanation"
@@ -200,8 +191,7 @@ Respond ONLY with valid JSON:
           messages: [{
             role: 'user',
             content: prompt
-          }],
-          temperature: 0.7
+          }]
         })
       });
 
@@ -230,65 +220,11 @@ Respond ONLY with valid JSON:
     }
   }
 
-  // Get consensus from multiple AI analyses
-  calculateConsensus(analyses) {
-    if (!analyses || analyses.length === 0) {
-      return null;
-    }
-
-    // Filter out null analyses
-    const validAnalyses = analyses.filter(a => a !== null);
-    if (validAnalyses.length === 0) {
-      return null;
-    }
-
-    // Calculate average expected move
-    const moves = validAnalyses.map(a => a.expected_move);
-    const avgMove = moves.reduce((sum, m) => sum + m, 0) / moves.length;
-    const minMove = Math.min(...moves);
-    const maxMove = Math.max(...moves);
-
-    // Calculate average confidence
-    const confidences = validAnalyses.map(a => a.confidence);
-    const avgConfidence = Math.round(confidences.reduce((sum, c) => sum + c, 0) / confidences.length);
-
-    // Determine consensus sentiment
-    const sentiments = validAnalyses.map(a => a.sentiment);
-    const bullishCount = sentiments.filter(s => s === 'bullish').length;
-    const bearishCount = sentiments.filter(s => s === 'bearish').length;
-    
-    let consensusSentiment;
-    if (bullishCount > bearishCount) {
-      consensusSentiment = 'bullish';
-    } else if (bearishCount > bullishCount) {
-      consensusSentiment = 'bearish';
-    } else {
-      consensusSentiment = 'neutral';
-    }
-
-    // Combine all factors
-    const allBullishFactors = validAnalyses.flatMap(a => a.bullish_factors || []);
-    const allBearishFactors = validAnalyses.flatMap(a => a.bearish_factors || []);
-
-    return {
-      sentiment: consensusSentiment,
-      expected_move_avg: Math.round(avgMove * 100) / 100,
-      expected_move_min: Math.round(minMove * 100) / 100,
-      expected_move_max: Math.round(maxMove * 100) / 100,
-      confidence: avgConfidence,
-      agreement_level: bullishCount === validAnalyses.length || bearishCount === validAnalyses.length ? 'unanimous' : 
-                      Math.abs(bullishCount - bearishCount) <= 1 ? 'split' : 'majority',
-      ai_count: validAnalyses.length,
-      bullish_factors: [...new Set(allBullishFactors)].slice(0, 5),
-      bearish_factors: [...new Set(allBearishFactors)].slice(0, 5)
-    };
-  }
-
-  // Main analysis function - gets consensus from selected AIs
-  async analyzeFiling(filingText, company, formType, ticker, aiPreferences = null) {
+  // Main method to analyze a filing with multiple AIs
+  async analyzeFiling(filingText, company, formType, aiPreferences = null) {
     console.log(`🤖 Analyzing ${formType} filing for ${company}...`);
-
-    // Only analyze high-priority filings
+    
+    // Skip low-priority filings to save API costs
     if (!this.isHighPriorityFiling(formType)) {
       console.log(`⏭️  Skipping low-priority filing type: ${formType}`);
       return null;
@@ -312,32 +248,49 @@ Respond ONLY with valid JSON:
       return null;
     }
 
-    console.log(`✅ Got ${validAnalyses.length} AI analyses from: ${validAnalyses.map(a => a.provider).join(', ')}`);
+    console.log(`✅ Completed ${validAnalyses.length} AI analysis(es)`);
 
-    // Calculate consensus
-    const consensus = this.calculateConsensus(validAnalyses);
+    // Aggregate results from multiple AIs
+    return this.aggregateAnalyses(validAnalyses);
+  }
 
-    // Use the first valid analysis for summaries (they should be similar)
-    const primaryAnalysis = validAnalyses[0];
+  // Aggregate multiple AI analyses into consensus
+  aggregateAnalyses(analyses) {
+    if (analyses.length === 0) return null;
+    if (analyses.length === 1) return analyses[0];
+
+    // Calculate consensus sentiment
+    const sentiments = analyses.map(a => a.sentiment);
+    const sentimentCounts = sentiments.reduce((acc, s) => {
+      acc[s] = (acc[s] || 0) + 1;
+      return acc;
+    }, {});
+    const consensusSentiment = Object.keys(sentimentCounts)
+      .sort((a, b) => sentimentCounts[b] - sentimentCounts[a])[0];
+
+    // Average confidence and predicted change
+    const avgConfidence = Math.round(
+      analyses.reduce((sum, a) => sum + a.confidence, 0) / analyses.length
+    );
+    const avgPredictedChange = 
+      analyses.reduce((sum, a) => sum + a.predicted_change, 0) / analyses.length;
+
+    // Combine all highlights and factors (deduplicate similar ones)
+    const allHighlights = [...new Set(analyses.flatMap(a => a.key_highlights || []))];
+    const allBullish = [...new Set(analyses.flatMap(a => a.bullish_factors || []))];
+    const allBearish = [...new Set(analyses.flatMap(a => a.bearish_factors || []))];
 
     return {
-      brief_summary: primaryAnalysis.brief_summary,
-      detailed_summary: primaryAnalysis.detailed_summary,
-      sentiment_direction: consensus.sentiment,
-      expected_move_min: consensus.expected_move_min,
-      expected_move_max: consensus.expected_move_max,
-      expected_move_avg: consensus.expected_move_avg,
-      confidence_score: consensus.confidence,
-      bullish_factors: consensus.bullish_factors,
-      bearish_factors: consensus.bearish_factors,
-      ai_consensus: {
-        analyses: validAnalyses,
-        agreement: consensus.agreement_level,
-        provider_count: validAnalyses.length
-      }
+      providers: analyses.map(a => a.provider),
+      sentiment: consensusSentiment,
+      confidence: avgConfidence,
+      predicted_change: parseFloat(avgPredictedChange.toFixed(2)),
+      key_highlights: allHighlights.slice(0, 5),
+      bullish_factors: allBullish.slice(0, 3),
+      bearish_factors: allBearish.slice(0, 3),
+      reasoning: `Consensus from ${analyses.length} AI models: ${analyses.map(a => a.provider).join(', ')}`
     };
   }
 }
 
 module.exports = new AIAnalysisService();
-// Cache bust 1770497988
