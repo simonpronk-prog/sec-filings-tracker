@@ -16,7 +16,7 @@ async function runMigration() {
     await pool.query(`
       ALTER TABLE users 
       ADD COLUMN IF NOT EXISTS ai_preferences JSONB 
-      DEFAULT '{"claude": false, "gemini": true, "grok": false}'::jsonb
+      DEFAULT '{"claude": true, "gemini": false, "grok": true}'::jsonb
     `);
     console.log('✅ Added ai_preferences column');
 

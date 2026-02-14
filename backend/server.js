@@ -3,8 +3,76 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { Pool } = require('pg');
 require('dotenv').config();
+
+// TOTP helpers (no external dependency)
+const TOTP = {
+  // Generate a random base32 secret
+  generateSecret(length = 20) {
+    const bytes = crypto.randomBytes(length);
+    const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let secret = '';
+    for (let i = 0; i < bytes.length; i++) {
+      secret += base32chars[bytes[i] % 32];
+    }
+    return secret;
+  },
+
+  // Decode base32 to buffer
+  base32ToBuffer(base32) {
+    const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = '';
+    for (const char of base32.toUpperCase()) {
+      const val = base32chars.indexOf(char);
+      if (val === -1) continue;
+      bits += val.toString(2).padStart(5, '0');
+    }
+    const bytes = [];
+    for (let i = 0; i + 8 <= bits.length; i += 8) {
+      bytes.push(parseInt(bits.substring(i, i + 8), 2));
+    }
+    return Buffer.from(bytes);
+  },
+
+  // Generate TOTP code for a given time
+  generateCode(secret, timeStep = 30, digits = 6) {
+    const time = Math.floor(Date.now() / 1000 / timeStep);
+    const timeBuffer = Buffer.alloc(8);
+    timeBuffer.writeUInt32BE(0, 0);
+    timeBuffer.writeUInt32BE(time, 4);
+
+    const key = this.base32ToBuffer(secret);
+    const hmac = crypto.createHmac('sha1', key).update(timeBuffer).digest();
+    const offset = hmac[hmac.length - 1] & 0xf;
+    const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % (10 ** digits);
+    return code.toString().padStart(digits, '0');
+  },
+
+  // Verify a TOTP code (checks current and +/- 1 window)
+  verify(token, secret) {
+    const timeStep = 30;
+    for (let i = -1; i <= 1; i++) {
+      const time = Math.floor(Date.now() / 1000 / timeStep) + i;
+      const timeBuffer = Buffer.alloc(8);
+      timeBuffer.writeUInt32BE(0, 0);
+      timeBuffer.writeUInt32BE(time, 4);
+
+      const key = this.base32ToBuffer(secret);
+      const hmac = crypto.createHmac('sha1', key).update(timeBuffer).digest();
+      const offset = hmac[hmac.length - 1] & 0xf;
+      const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % 1000000;
+      if (token === code.toString().padStart(6, '0')) return true;
+    }
+    return false;
+  },
+
+  // Generate otpauth URI for QR code
+  getUri(secret, email, issuer = 'SEC Filings Tracker') {
+    return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+  }
+};
 
 // Import services
 const secEdgar = require('./services/secEdgar');
@@ -18,16 +86,16 @@ const PORT = process.env.PORT || 8080;
 
 // Database connection
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  connectionString: process.env.DATABASE_URL
 });
 
 // Middleware
 app.use(cors({
   origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    'http://localhost:3000', // for local development
-    'http://localhost:3001'  // for local development
+    'https://stockmagic.net',
+    'https://www.stockmagic.net',
+    'http://localhost:3000',
+    'http://localhost:3001'
   ],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -81,21 +149,31 @@ app.post('/api/auth/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // Generate TOTP secret for 2FA
+    const totpSecret = TOTP.generateSecret();
+
     const result = await pool.query(
-      'INSERT INTO users (email, password, name, notifications_enabled) VALUES ($1, $2, $3, true) RETURNING id, email, name',
-      [email, hashedPassword, name]
+      'INSERT INTO users (email, password, name, notifications_enabled, totp_secret, totp_enabled) VALUES ($1, $2, $3, true, $4, false) RETURNING id, email, name',
+      [email, hashedPassword, name, totpSecret]
     );
 
     const user = result.rows[0];
+    const totpUri = TOTP.getUri(totpSecret, email);
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
-      expiresIn: '30d'
+    // Return a temporary token for TOTP setup only
+    const tempToken = jwt.sign({ id: user.id, email: user.email, setupOnly: true }, JWT_SECRET, {
+      expiresIn: '15m'
     });
 
-    // Send welcome email
-    await notifications.sendWelcomeEmail(user);
-
-    res.json({ token, user });
+    res.json({ 
+      token: tempToken, 
+      user,
+      totp: {
+        secret: totpSecret,
+        uri: totpUri,
+        setupRequired: true
+      }
+    });
   } catch (error) {
     console.error('Register error:', error);
     res.status(500).json({ error: 'Server error during registration' });
@@ -105,14 +183,12 @@ app.post('/api/auth/register', async (req, res) => {
 // Login
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, totpCode } = req.body;
 
-    // Validate input
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    // Find user
     const result = await pool.query(
       'SELECT * FROM users WHERE email = $1',
       [email]
@@ -124,13 +200,23 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = result.rows[0];
 
-    // Check password
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
       return res.status(400).json({ error: 'Invalid credentials' });
     }
 
-    // Create JWT token
+    // 2FA is mandatory - always require TOTP code
+    if (!totpCode) {
+      return res.json({ 
+        requires2FA: true,
+        message: 'Please enter your authenticator code'
+      });
+    }
+
+    if (!TOTP.verify(totpCode, user.totp_secret)) {
+      return res.status(400).json({ error: 'Invalid authenticator code' });
+    }
+
     const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, {
       expiresIn: '30d'
     });
@@ -140,12 +226,140 @@ app.post('/api/auth/login', async (req, res) => {
       user: { 
         id: user.id, 
         email: user.email, 
-        name: user.name 
+        name: user.name,
+        totpEnabled: user.totp_enabled
       } 
     });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+// ============================================
+// 2FA / TOTP ROUTES
+// ============================================
+
+// Confirm TOTP setup (user scanned QR, now verifying it works)
+app.post('/api/auth/totp/confirm', authenticateToken, async (req, res) => {
+  try {
+    const { totpCode } = req.body;
+
+    const result = await pool.query(
+      'SELECT totp_secret, totp_enabled, email FROM users WHERE id = $1',
+      [req.user.id]
+    );
+
+    const user = result.rows[0];
+    if (!user || !user.totp_secret) {
+      return res.status(400).json({ error: 'No TOTP secret found. Please re-register.' });
+    }
+
+    if (user.totp_enabled) {
+      return res.json({ message: '2FA is already enabled', totpEnabled: true });
+    }
+
+    if (!TOTP.verify(totpCode, user.totp_secret)) {
+      return res.status(400).json({ error: 'Invalid code. Please try again.' });
+    }
+
+    // Enable 2FA
+    await pool.query(
+      'UPDATE users SET totp_enabled = true WHERE id = $1',
+      [req.user.id]
+    );
+
+    // Issue a full access token now that 2FA is confirmed
+    const token = jwt.sign({ id: req.user.id, email: user.email }, JWT_SECRET, {
+      expiresIn: '30d'
+    });
+
+    res.json({ message: '2FA enabled successfully', totpEnabled: true, token });
+  } catch (error) {
+    console.error('TOTP confirm error:', error);
+    res.status(500).json({ error: 'Error confirming 2FA setup' });
+  }
+});
+
+// Get TOTP setup info (for users who haven't set up yet)
+app.get('/api/auth/totp/setup', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT email, totp_secret, totp_enabled FROM users WHERE id = $1',
+      [req.user.id]
+    );
+
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (user.totp_enabled) {
+      return res.json({ totpEnabled: true });
+    }
+
+    // Generate new secret if none exists
+    let secret = user.totp_secret;
+    if (!secret) {
+      secret = TOTP.generateSecret();
+      await pool.query('UPDATE users SET totp_secret = $1 WHERE id = $2', [secret, req.user.id]);
+    }
+
+    res.json({
+      totpEnabled: false,
+      secret,
+      uri: TOTP.getUri(secret, user.email)
+    });
+  } catch (error) {
+    console.error('TOTP setup error:', error);
+    res.status(500).json({ error: 'Error getting 2FA setup' });
+  }
+});
+
+// Password reset via TOTP
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { email, totpCode, newPassword } = req.body;
+
+    if (!email || !totpCode || !newPassword) {
+      return res.status(400).json({ error: 'Email, authenticator code, and new password required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      // Don't reveal if user exists
+      return res.status(400).json({ error: 'Invalid email or authenticator code' });
+    }
+
+    const user = result.rows[0];
+
+    if (!user.totp_secret) {
+      return res.status(400).json({ error: 'Account setup incomplete. Please contact support.' });
+    }
+
+    if (!TOTP.verify(totpCode, user.totp_secret)) {
+      return res.status(400).json({ error: 'Invalid authenticator code' });
+    }
+
+    // Reset password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await pool.query(
+      'UPDATE users SET password = $1 WHERE id = $2',
+      [hashedPassword, user.id]
+    );
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(500).json({ error: 'Error resetting password' });
   }
 });
 
@@ -246,7 +460,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
       'SELECT ai_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
-    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: false, gemini: true, grok: false };
+    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
     console.log('🎯 User AI preferences:', aiPreferences);
     
     const watchlist = await pool.query(
@@ -460,7 +674,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
       'SELECT ai_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
-    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: false, gemini: true, grok: false };
+    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
 
     // Fetch filing text using VERSION 2.0 parser
     const filingText = await secEdgar.parseFilingContent(
@@ -591,6 +805,91 @@ app.get('/api/admin/status', authenticateToken, async (req, res) => {
 });
 
 // ============================================
+// DASHBOARD ROUTE
+// ============================================
+app.get('/api/dashboard', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get watchlist with filing stats per ticker
+    const tickerStats = await pool.query(`
+      SELECT 
+        w.ticker,
+        w.name,
+        w.cik,
+        COUNT(f.id) AS total_filings,
+        COUNT(CASE WHEN f.read = false THEN 1 END) AS unread_count,
+        COUNT(CASE WHEN f.ai_summary IS NOT NULL THEN 1 END) AS analyzed_count,
+        MAX(f.filed_date) AS latest_filing_date,
+        -- Get the most recent analyzed filing's sentiment
+        (SELECT f2.sentiment_direction FROM filings f2 
+         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+         ORDER BY f2.filed_date DESC LIMIT 1) AS latest_sentiment,
+        (SELECT f2.expected_move_avg FROM filings f2 
+         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+         ORDER BY f2.filed_date DESC LIMIT 1) AS latest_move_avg,
+        (SELECT f2.confidence_score FROM filings f2 
+         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+         ORDER BY f2.filed_date DESC LIMIT 1) AS latest_confidence,
+        (SELECT f2.form_type FROM filings f2 
+         WHERE f2.cik = w.cik AND f2.user_id = $1
+         ORDER BY f2.filed_date DESC LIMIT 1) AS latest_form_type,
+        (SELECT f2.ai_summary FROM filings f2 
+         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+         ORDER BY f2.filed_date DESC LIMIT 1) AS latest_summary
+      FROM watchlist w
+      LEFT JOIN filings f ON f.cik = w.cik AND f.user_id = w.user_id
+      WHERE w.user_id = $1
+      GROUP BY w.ticker, w.name, w.cik
+      ORDER BY MAX(f.filed_date) DESC NULLS LAST
+    `, [userId]);
+
+    // Get recent high-priority filings (needle movers)
+    const needleMovers = await pool.query(`
+      SELECT 
+        f.accession_number,
+        f.company,
+        f.form_type,
+        f.filed_date,
+        f.ai_summary,
+        f.sentiment_direction,
+        f.expected_move_avg,
+        f.confidence_score,
+        f.read,
+        w.ticker
+      FROM filings f
+      JOIN watchlist w ON f.cik = w.cik AND f.user_id = w.user_id
+      WHERE f.user_id = $1
+        AND f.ai_summary IS NOT NULL
+        AND f.form_type IN ('10-K', '10-Q', '8-K', '6-K', '20-F', '13F-HR', 'SC 13D', 'SC 13G', 'DEF 14A', '4', 'S-1')
+      ORDER BY f.filed_date DESC
+      LIMIT 20
+    `, [userId]);
+
+    // Summary stats
+    const totalUnread = tickerStats.rows.reduce((sum, r) => sum + parseInt(r.unread_count || 0), 0);
+    const bullishCount = tickerStats.rows.filter(r => r.latest_sentiment === 'bullish').length;
+    const bearishCount = tickerStats.rows.filter(r => r.latest_sentiment === 'bearish').length;
+    const neutralCount = tickerStats.rows.filter(r => r.latest_sentiment && r.latest_sentiment !== 'bullish' && r.latest_sentiment !== 'bearish').length;
+
+    res.json({
+      tickers: tickerStats.rows,
+      needleMovers: needleMovers.rows,
+      summary: {
+        totalUnread,
+        totalTickers: tickerStats.rows.length,
+        bullish: bullishCount,
+        bearish: bearishCount,
+        neutral: neutralCount
+      }
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ error: 'Error fetching dashboard data' });
+  }
+});
+
+// ============================================
 // HEALTH CHECK
 // ============================================
 app.get('/health', (req, res) => {
@@ -602,9 +901,6 @@ app.get('/health', (req, res) => {
 // ============================================
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
-  
-  // Test email configuration
-  await notifications.testEmailConfig();
   
   // Initialize cron jobs for automated filing checks
   filingChecker.initializeCronJobs();
@@ -622,9 +918,18 @@ async function initDatabase() {
         phone VARCHAR(20),
         notifications_enabled BOOLEAN DEFAULT true,
         notification_preferences JSONB DEFAULT '{"instantEmail": true, "instantSms": false, "dailyDigest": false, "weeklyDigest": false}'::jsonb,
-        ai_preferences JSONB DEFAULT '{"claude": false, "gemini": true, "grok": false}'::jsonb,
+        ai_preferences JSONB DEFAULT '{"claude": true, "gemini": true, "grok": true}'::jsonb,
+        totp_secret VARCHAR(64),
+        totp_enabled BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Add TOTP columns if they don't exist (for existing installs)
+      DO $$ BEGIN
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT false;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS watchlist (
         id SERIAL PRIMARY KEY,
