@@ -7,72 +7,21 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// TOTP helpers (no external dependency)
+const { authenticator } = require('otplib');
+
+// TOTP helpers using otplib
 const TOTP = {
-  // Generate a random base32 secret
-  generateSecret(length = 20) {
-    const bytes = crypto.randomBytes(length);
-    const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let secret = '';
-    for (let i = 0; i < bytes.length; i++) {
-      secret += base32chars[bytes[i] % 32];
-    }
-    return secret;
+  generateSecret() {
+    return authenticator.generateSecret();
   },
-
-  // Decode base32 to buffer
-  base32ToBuffer(base32) {
-    const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let bits = '';
-    for (const char of base32.toUpperCase()) {
-      const val = base32chars.indexOf(char);
-      if (val === -1) continue;
-      bits += val.toString(2).padStart(5, '0');
-    }
-    const bytes = [];
-    for (let i = 0; i + 8 <= bits.length; i += 8) {
-      bytes.push(parseInt(bits.substring(i, i + 8), 2));
-    }
-    return Buffer.from(bytes);
-  },
-
-  // Generate TOTP code for a given time
-  generateCode(secret, timeStep = 30, digits = 6) {
-    const time = Math.floor(Date.now() / 1000 / timeStep);
-    const timeBuffer = Buffer.alloc(8);
-    timeBuffer.writeUInt32BE(0, 0);
-    timeBuffer.writeUInt32BE(time, 4);
-
-    const key = this.base32ToBuffer(secret);
-    const hmac = crypto.createHmac('sha1', key).update(timeBuffer).digest();
-    const offset = hmac[hmac.length - 1] & 0xf;
-    const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % (10 ** digits);
-    return code.toString().padStart(digits, '0');
-  },
-
-  // Verify a TOTP code (checks current and +/- 1 window)
   verify(token, secret) {
-    const timeStep = 30;
-    for (let i = -1; i <= 1; i++) {
-      const time = Math.floor(Date.now() / 1000 / timeStep) + i;
-      const timeBuffer = Buffer.alloc(8);
-      timeBuffer.writeUInt32BE(0, 0);
-      timeBuffer.writeUInt32BE(time, 4);
-
-      const key = this.base32ToBuffer(secret);
-      const hmac = crypto.createHmac('sha1', key).update(timeBuffer).digest();
-      const offset = hmac[hmac.length - 1] & 0xf;
-      const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % 1000000;
-      if (token === code.toString().padStart(6, '0')) return true;
-    }
-    return false;
+    return authenticator.check(token, secret);
   },
-
-  // Generate otpauth URI for QR code
   getUri(secret, email, issuer = 'SEC Filings Tracker') {
-    return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(email)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+    return authenticator.keyuri(email, issuer, secret);
   }
 };
+
 
 // Import services
 const secEdgar = require('./services/secEdgar');
