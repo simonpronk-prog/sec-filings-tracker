@@ -33,7 +33,8 @@ class AIAnalysisService {
 
   // Build the standard prompt for all AI providers
   buildPrompt(filingText, company, formType) {
-    return `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
+    const today = new Date().toISOString().split('T')[0];
+    return `You are a financial analyst. Today's date is ${today}. Analyze this ${formType} SEC filing for ${company}.
 
 CRITICAL RULES FOR NUMBERS AND DATA:
 - ONLY cite numbers (share counts, dollar amounts, percentages, dates) that appear VERBATIM in the filing text below.
