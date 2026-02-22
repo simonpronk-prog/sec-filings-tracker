@@ -40,6 +40,7 @@ CRITICAL RULES FOR NUMBERS AND DATA:
 - If the filing text is unclear or you cannot find a specific number, say "not specified in filing" rather than guessing.
 - NEVER estimate, round, or invent any numerical figure. If the text says "403,025 shares" you must say "403,025 shares", not "approximately 400,000 shares" or "53 million shares".
 - For dollar amounts, use exactly what the filing states. Do not calculate or convert unless the filing itself provides the conversion.
+- Format all numbers for readability: use commas for thousands (e.g. 327,088 not 327088) and $ symbol for dollar amounts (e.g. $43,737,684.02 not 43737684.02).
 - If the filing text appears truncated or incomplete, note this in your summary and only report numbers you can actually see.
 
 Filing content (may be truncated):
