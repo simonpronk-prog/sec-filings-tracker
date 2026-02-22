@@ -1,7 +1,32 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Auth from './Auth';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://sec-filings-tracker-production.up.railway.app';
+const API_URL = process.env.REACT_APP_API_URL || 'https://stockmagic.net';
+
+// Filing type descriptions for users
+const FILING_TYPES = {
+  '10-K': { name: '10-K', desc: 'Annual report — full year financial overview, audited statements', priority: 'high' },
+  '10-Q': { name: '10-Q', desc: 'Quarterly report — 3-month financial update', priority: 'high' },
+  '8-K': { name: '8-K', desc: 'Major event — mergers, leadership changes, material events', priority: 'high' },
+  '4': { name: 'Form 4', desc: 'Insider trading — executive/director buys and sells', priority: 'medium' },
+  '144': { name: 'Form 144', desc: 'Notice of proposed insider sale of restricted stock', priority: 'low' },
+  'SC 13D': { name: 'SC 13D', desc: 'Large shareholder (5%+) with activist intent', priority: 'high' },
+  'SC 13D/A': { name: 'SC 13D/A', desc: 'Amendment to activist shareholder disclosure', priority: 'medium' },
+  'SC 13G': { name: 'SC 13G', desc: 'Large shareholder (5%+) passive investment', priority: 'medium' },
+  'SC 13G/A': { name: 'SC 13G/A', desc: 'Amendment to passive shareholder disclosure', priority: 'low' },
+  'SCHEDULE 13G/A': { name: '13G/A', desc: 'Amendment to passive shareholder disclosure', priority: 'low' },
+  'S-1': { name: 'S-1', desc: 'IPO registration — company going public', priority: 'high' },
+  'S-3': { name: 'S-3', desc: 'Shelf registration — future stock offering', priority: 'medium' },
+  'S-8': { name: 'S-8', desc: 'Employee stock plan registration', priority: 'low' },
+  'DEF 14A': { name: 'DEF 14A', desc: 'Proxy statement — shareholder voting matters', priority: 'high' },
+  '13F-HR': { name: '13F-HR', desc: 'Institutional holdings report (hedge funds)', priority: 'medium' },
+  '20-F': { name: '20-F', desc: 'Annual report for foreign companies', priority: 'high' },
+  '6-K': { name: '6-K', desc: 'Foreign company interim report or event', priority: 'medium' },
+};
+
+function getFilingInfo(formType) {
+  return FILING_TYPES[formType] || { name: formType, desc: 'SEC filing', priority: 'low' };
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('sec_token'));
@@ -18,9 +43,14 @@ function App() {
   const [filings, setFilings] = useState([]);
   const [filingsLoading, setFilingsLoading] = useState(false);
   const [filingsError, setFilingsError] = useState('');
-  const [daysBack, setDaysBack] = useState(7);
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().split('T')[0];
+  });
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0]);
   const [filingsSearchQuery, setFilingsSearchQuery] = useState('');
   const [expandedFiling, setExpandedFiling] = useState(null);
+  const [typeFilter, setTypeFilter] = useState('all'); // 'all', 'high', 'medium', 'low', or specific type
+  const [showTypeInfo, setShowTypeInfo] = useState(false);
   // Settings
   const [aiPreferences, setAiPreferences] = useState({ claude: true, gemini: true, grok: true });
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -46,16 +76,19 @@ function App() {
   const loadFilings = useCallback(async () => {
     setFilingsLoading(true); setFilingsError('');
     try {
+      const from = new Date(dateFrom);
+      const to = new Date(dateTo);
+      const daysBack = Math.ceil((to - from) / (1000 * 60 * 60 * 24)) + 1;
       const r = await apiFetch(`/api/sec/filings?daysBack=${daysBack}`);
       const d = await r.json();
       if (r.ok) setFilings(d); else setFilingsError(d.error || 'Failed');
     } catch { setFilingsError('Network error'); }
     finally { setFilingsLoading(false); }
-  }, [daysBack]);
+  }, [dateFrom, dateTo]);
 
   useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); } }, [isAuthenticated]);
   useEffect(() => { if (isAuthenticated && activeTab === 'dashboard') loadDashboard(); }, [activeTab]);
-  useEffect(() => { if (isAuthenticated && watchlist.length > 0 && activeTab === 'filings') loadFilings(); }, [watchlist, daysBack, activeTab, isAuthenticated, loadFilings]);
+  useEffect(() => { if (isAuthenticated && watchlist.length > 0 && activeTab === 'filings' && filings.length === 0) loadFilings(); }, [watchlist, activeTab, isAuthenticated, loadFilings, filings.length]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -95,10 +128,28 @@ function App() {
     finally { setSettingsSaving(false); }
   };
 
+  // Get unique filing types from loaded filings
+  const availableTypes = [...new Set(filings.map(f => f.formType))].sort();
+
   const filteredFilings = filings.filter(f => {
-    if (!filingsSearchQuery) return true;
-    const q = filingsSearchQuery.toLowerCase();
-    return f.company?.toLowerCase().includes(q) || f.formType?.toLowerCase().includes(q) || f.ticker?.toLowerCase().includes(q) || f.cik?.toString().includes(q) || f.description?.toLowerCase().includes(q);
+    // Date filter
+    const fDate = new Date(f.filedDate);
+    if (fDate < new Date(dateFrom) || fDate > new Date(dateTo + 'T23:59:59')) return false;
+    // Text search
+    if (filingsSearchQuery) {
+      const q = filingsSearchQuery.toLowerCase();
+      if (!(f.company?.toLowerCase().includes(q) || f.formType?.toLowerCase().includes(q) || f.ticker?.toLowerCase().includes(q) || f.cik?.toString().includes(q) || f.description?.toLowerCase().includes(q))) return false;
+    }
+    // Type filter
+    if (typeFilter !== 'all') {
+      if (typeFilter === 'high' || typeFilter === 'medium' || typeFilter === 'low') {
+        const info = getFilingInfo(f.formType);
+        if (info.priority !== typeFilter) return false;
+      } else {
+        if (f.formType !== typeFilter) return false;
+      }
+    }
+    return true;
   });
 
   const sentiment = (s) => {
@@ -114,7 +165,7 @@ function App() {
     <div style={{ minHeight: '100vh', background: '#f5f5f5' }}>
       {/* Header */}
       <div style={{ background: 'white', padding: '1rem 2rem', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0, color: '#333', fontSize: '1.3rem' }}>SEC Filings Tracker</h1>
+        <h1 style={{ margin: 0, color: '#333', fontSize: '1.3rem' }}>StockMagic</h1>
         <button onClick={handleLogout} style={{ padding: '0.5rem 1rem', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Logout</button>
       </div>
 
@@ -129,36 +180,35 @@ function App() {
           }}>
             {t === 'dashboard' ? `Dashboard${dashboard?.summary?.totalUnread ? ` (${dashboard.summary.totalUnread})` : ''}` :
              t === 'watchlist' ? `Watchlist (${watchlist.length})` :
-             t === 'filings' ? `Filings (${filings.length})` : 'Settings'}
+             t === 'filings' ? `Filings (${filteredFilings.length})` : 'Settings'}
           </button>
         ))}
       </div>
 
       <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
 
-        {/* ========== DASHBOARD ========== */}
         {activeTab === 'dashboard' && (<Dashboard
           dashboard={dashboard} loading={dashboardLoading} filter={dashboardFilter}
           setFilter={setDashboardFilter} onRefresh={loadDashboard} sentiment={sentiment}
           onTickerClick={(q) => { setFilingsSearchQuery(q); setActiveTab('filings'); loadFilings(); }}
         />)}
 
-        {/* ========== WATCHLIST ========== */}
         {activeTab === 'watchlist' && (<Watchlist
           watchlist={watchlist} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
           searchResults={searchResults} onAdd={addToWatchlist} onRemove={removeFromWatchlist}
         />)}
 
-        {/* ========== FILINGS ========== */}
         {activeTab === 'filings' && (<Filings
           filings={filteredFilings} loading={filingsLoading} error={filingsError}
-          daysBack={daysBack} setDaysBack={setDaysBack} onRefresh={loadFilings}
+          dateFrom={dateFrom} dateTo={dateTo} setDateFrom={setDateFrom} setDateTo={setDateTo}
+          onRefresh={loadFilings}
           searchQuery={filingsSearchQuery} setSearchQuery={setFilingsSearchQuery}
           expandedFiling={expandedFiling} setExpandedFiling={setExpandedFiling}
           sentiment={sentiment} priorityBadge={priorityBadge} watchlistEmpty={watchlist.length === 0}
+          typeFilter={typeFilter} setTypeFilter={setTypeFilter} availableTypes={availableTypes}
+          showTypeInfo={showTypeInfo} setShowTypeInfo={setShowTypeInfo}
         />)}
 
-        {/* ========== SETTINGS ========== */}
         {activeTab === 'settings' && (<Settings
           aiPreferences={aiPreferences} saving={settingsSaving} onSave={saveAiPreferences}
         />)}
@@ -206,7 +256,6 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
       {loading && !dashboard && <div style={{ textAlign: 'center', padding: '3rem', background: 'white', borderRadius: '8px', color: '#666' }}>Loading...</div>}
       {dashboard && dashboard.tickers.length === 0 && <div style={{ textAlign: 'center', padding: '3rem', background: 'white', borderRadius: '8px', color: '#666' }}>No companies in your watchlist yet.</div>}
 
-      {/* Ticker cards */}
       {dashboard && (filter === 'all' || filter === 'unread') && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '2rem' }}>
           <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem' }}>{filter === 'unread' ? 'Unread Filings' : 'Your Watchlist'}</h2>
@@ -239,7 +288,6 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
         </div>
       )}
 
-      {/* Needle movers */}
       {dashboard && (filter === 'needle-movers' || filter === 'all') && dashboard.needleMovers.length > 0 && (
         <div>
           <h2 style={{ margin: '0 0 0.75rem 0', fontSize: '1.1rem' }}>🎯 Needle Movers</h2>
@@ -319,23 +367,75 @@ function Watchlist({ watchlist, searchQuery, setSearchQuery, searchResults, onAd
 // ============================================
 // FILINGS COMPONENT
 // ============================================
-function Filings({ filings, loading, error, daysBack, setDaysBack, onRefresh, searchQuery, setSearchQuery, expandedFiling, setExpandedFiling, sentiment, priorityBadge, watchlistEmpty }) {
+function Filings({ filings, loading, error, dateFrom, dateTo, setDateFrom, setDateTo, onRefresh, searchQuery, setSearchQuery, expandedFiling, setExpandedFiling, sentiment, priorityBadge, watchlistEmpty, typeFilter, setTypeFilter, availableTypes, showTypeInfo, setShowTypeInfo }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <h2 style={{ margin: 0 }}>Recent Filings</h2>
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <select value={daysBack} onChange={e => setDaysBack(Number(e.target.value))} style={{ padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px' }}>
-            <option value={7}>7 days</option><option value={14}>14 days</option><option value={30}>30 days</option><option value={90}>90 days</option>
-          </select>
-          <button onClick={onRefresh} disabled={loading} style={{ padding: '0.5rem 1rem', background: '#667eea', color: 'white', border: 'none', borderRadius: '4px', cursor: loading ? 'not-allowed' : 'pointer' }}>
-            {loading ? 'Loading...' : 'Refresh'}
-          </button>
-        </div>
+        <h2 style={{ margin: 0 }}>Filings</h2>
+        <button onClick={() => onRefresh()} disabled={loading} style={{ padding: '0.5rem 1rem', background: '#667eea', color: 'white', border: 'none', borderRadius: '4px', cursor: loading ? 'not-allowed' : 'pointer' }}>
+          {loading ? 'Loading...' : '⟳ Refresh from SEC'}
+        </button>
       </div>
 
-      <input type="text" placeholder="Search by ticker, form type, company..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-        style={{ width: '100%', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem', boxSizing: 'border-box', marginBottom: '1rem' }} />
+      {/* Date range */}
+      <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <label style={{ fontSize: '0.9rem', color: '#666' }}>From:</label>
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+          style={{ padding: '0.4rem', border: '1px solid #ddd', borderRadius: '4px' }} />
+        <label style={{ fontSize: '0.9rem', color: '#666' }}>To:</label>
+        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+          style={{ padding: '0.4rem', border: '1px solid #ddd', borderRadius: '4px' }} />
+        {/* Quick presets */}
+        {[{l: '7d', d: 7}, {l: '30d', d: 30}, {l: '90d', d: 90}].map(p => (
+          <button key={p.l} onClick={() => {
+            const to = new Date(); const from = new Date(); from.setDate(from.getDate() - p.d);
+            setDateFrom(from.toISOString().split('T')[0]); setDateTo(to.toISOString().split('T')[0]);
+          }} style={{ padding: '0.3rem 0.6rem', border: '1px solid #ddd', borderRadius: '4px', background: 'white', cursor: 'pointer', fontSize: '0.85rem', color: '#667eea' }}>
+            {p.l}
+          </button>
+        ))}
+      </div>
+
+      {/* Search + type filter */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <input type="text" placeholder="Search by ticker, company, CIK..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+          style={{ flex: 1, minWidth: '200px', padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem', boxSizing: 'border-box' }} />
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
+          style={{ padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.9rem', minWidth: '150px' }}>
+          <option value="all">All Types</option>
+          <option value="high">🔴 High Priority</option>
+          <option value="medium">🟡 Medium Priority</option>
+          <option value="low">🟢 Low Priority</option>
+          <option disabled>──────────</option>
+          {availableTypes.map(t => (
+            <option key={t} value={t}>{t} — {getFilingInfo(t).desc.slice(0, 40)}</option>
+          ))}
+        </select>
+        <button onClick={() => setShowTypeInfo(!showTypeInfo)}
+          style={{ padding: '0.75rem', border: '1px solid #ddd', borderRadius: '4px', background: showTypeInfo ? '#667eea' : 'white', color: showTypeInfo ? 'white' : '#667eea', cursor: 'pointer', fontSize: '0.9rem' }}>
+          ℹ️ Types
+        </button>
+      </div>
+
+      {/* Filing type reference */}
+      {showTypeInfo && (
+        <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', marginBottom: '1rem', border: '1px solid #e0e0e0' }}>
+          <h3 style={{ margin: '0 0 0.75rem 0', fontSize: '1rem' }}>Filing Type Reference</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '0.5rem' }}>
+            {Object.entries(FILING_TYPES).map(([key, info]) => (
+              <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.4rem', borderRadius: '4px', background: '#f9f9f9' }}>
+                <span style={{ fontSize: '0.7rem', marginTop: '2px' }}>
+                  {info.priority === 'high' ? '🔴' : info.priority === 'medium' ? '🟡' : '🟢'}
+                </span>
+                <div>
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>{key}</span>
+                  <span style={{ fontSize: '0.8rem', color: '#666', marginLeft: '0.5rem' }}>{info.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && <div style={{ padding: '1rem', background: '#f8d7da', color: '#721c24', borderRadius: '4px', marginBottom: '1rem' }}>{error}</div>}
 
@@ -344,28 +444,29 @@ function Filings({ filings, loading, error, daysBack, setDaysBack, onRefresh, se
       ) : loading ? (
         <div style={{ textAlign: 'center', padding: '2rem', background: 'white', borderRadius: '8px', color: '#666' }}>Loading filings...</div>
       ) : filings.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '2rem', background: 'white', borderRadius: '8px', color: '#666' }}>{searchQuery ? 'No matches.' : 'No recent filings.'}</div>
+        <div style={{ textAlign: 'center', padding: '2rem', background: 'white', borderRadius: '8px', color: '#666' }}>{searchQuery || typeFilter !== 'all' ? 'No matches for current filters.' : 'No filings in this date range. Try a wider range or click Refresh.'}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {filings.map(f => {
             const isExp = expandedFiling === f.accessionNumber;
             const s = sentiment(f.sentiment_direction);
-            const badge = priorityBadge(f.priority);
+            const info = getFilingInfo(f.formType);
             const has = f.ai_summary;
             return (
               <div key={f.accessionNumber || f.id} style={{ background: 'white', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
                 <div style={{ padding: '1.5rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-                      <span style={{ fontSize: '1.2rem' }}>{badge}</span>
+                      <span style={{ fontSize: '1.2rem' }}>{info.priority === 'high' ? '🔴' : info.priority === 'medium' ? '🟡' : '🟢'}</span>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{f.company || 'Unknown'}</span>
+                          <span style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{f.ticker || f.company || 'Unknown'}</span>
                           <span style={{ padding: '0.25rem 0.5rem', background: '#667eea', color: 'white', borderRadius: '4px', fontSize: '0.85rem' }}>{f.formType}</span>
                         </div>
                         <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                          {f.description} · Filed: {f.filedDate ? new Date(f.filedDate).toLocaleDateString() : 'N/A'}
+                          {info.desc} · Filed: {f.filedDate ? new Date(f.filedDate).toLocaleDateString() : 'N/A'}
                         </div>
+                        {f.company && f.ticker && <div style={{ color: '#888', fontSize: '0.8rem' }}>{f.company}</div>}
                       </div>
                     </div>
                     {has && f.expected_move_avg && (
@@ -376,6 +477,7 @@ function Filings({ filings, loading, error, daysBack, setDaysBack, onRefresh, se
                     )}
                   </div>
                   {has && <div style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '4px', borderLeft: `4px solid ${s.color}`, fontSize: '0.95rem', lineHeight: '1.5', color: '#333' }}>🤖 {f.ai_summary}</div>}
+                  {!has && <div style={{ padding: '0.75rem', background: '#fff9e6', borderRadius: '4px', borderLeft: '4px solid #ffc107', fontSize: '0.9rem', color: '#856404' }}>⏳ AI analysis pending — will be processed on next check</div>}
                   <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     <a href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${f.cik}&type=${f.formType}&dateb=&owner=exclude&count=40`}
                       target="_blank" rel="noopener noreferrer"
