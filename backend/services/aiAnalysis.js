@@ -31,99 +31,6 @@ class AIAnalysisService {
     return priority.level === 'high';
   }
 
-  // Build the standard prompt for all AI providers
-  buildPrompt(filingText, company, formType) {
-    return `You are a financial analyst. Analyze this ${formType} filing for ${company}.
-
-Filing content (truncated to 50k chars):
-${filingText.substring(0, 50000)}
-
-Provide your analysis in the following JSON format ONLY (no other text):
-{
-  "sentiment": "bullish or bearish or neutral",
-  "confidence": 85,
-  "predicted_change": 5.2,
-  "key_highlights": ["point1", "point2", "point3"],
-  "bullish_factors": ["factor1", "factor2"],
-  "bearish_factors": ["risk1", "risk2"],
-  "reasoning": "2-3 sentence explanation of your analysis"
-}`;
-  }
-
-  // Normalize raw AI response into the format server.js expects for database storage
-  normalizeAnalysis(raw, provider) {
-    const predictedChange = parseFloat(raw.predicted_change) || 0;
-    const confidence = parseInt(raw.confidence) || 50;
-
-    // Map the AI response fields to what server.js saves to the database
-    return {
-      provider: provider,
-      // Fields that server.js reads for database columns:
-      brief_summary: `${raw.sentiment ? raw.sentiment.charAt(0).toUpperCase() + raw.sentiment.slice(1) : 'Neutral'} outlook (${confidence}% confidence). ${(raw.key_highlights || []).slice(0, 2).join('. ')}`,
-      detailed_summary: raw.reasoning || 'No detailed reasoning provided.',
-      sentiment_direction: raw.sentiment || 'neutral',
-      expected_move_min: Math.min(predictedChange, predictedChange * 0.7).toFixed(2),
-      expected_move_max: Math.max(predictedChange, predictedChange * 1.3).toFixed(2),
-      expected_move_avg: predictedChange.toFixed(2),
-      confidence_score: confidence,
-      bullish_factors: raw.bullish_factors || [],
-      bearish_factors: raw.bearish_factors || [],
-      ai_consensus: {
-        providers: [provider],
-        sentiment: raw.sentiment || 'neutral',
-        confidence: confidence,
-        predicted_change: predictedChange,
-        key_highlights: raw.key_highlights || []
-      },
-      // Also keep original fields for direct use
-      sentiment: raw.sentiment || 'neutral',
-      confidence: confidence,
-      predicted_change: predictedChange,
-      key_highlights: raw.key_highlights || [],
-      reasoning: raw.reasoning || ''
-    };
-  }
-
-  // Extract JSON from AI response text (handles markdown code blocks etc.)
-  extractJSON(text) {
-    // Try direct parse first
-    try {
-      return JSON.parse(text.trim());
-    } catch (e) {
-      // Fall through
-    }
-
-    // Try to find JSON in markdown code blocks or raw text
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in AI response');
-    }
-    return JSON.parse(jsonMatch[0]);
-  }
-
-  // Helper: sleep for ms
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  // Helper: retry a function with exponential backoff on 429 errors
-  async retryWithBackoff(fn, maxRetries = 3, baseDelay = 5000) {
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        const is429 = error.message && error.message.includes('429');
-        if (is429 && attempt < maxRetries) {
-          const delay = baseDelay * Math.pow(2, attempt); // 5s, 10s, 20s
-          console.log(`⏳ Rate limited (429), retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})...`);
-          await this.sleep(delay);
-        } else {
-          throw error;
-        }
-      }
-    }
-  }
-
   // Analyze filing with Claude (Anthropic)
   async analyzeWithClaude(filingText, company, formType) {
     if (!this.anthropicKey) {
@@ -132,38 +39,69 @@ Provide your analysis in the following JSON format ONLY (no other text):
     }
 
     try {
-      const prompt = this.buildPrompt(filingText, company, formType);
+      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
 
-      const result = await this.retryWithBackoff(async () => {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this.anthropicKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 1024,
-            messages: [{
-              role: 'user',
-              content: prompt
-            }]
-          })
-        });
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-        if (!response.ok) {
-          throw new Error(`Claude API error: ${response.status}`);
-        }
+Filing type context:
+- 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
+- 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
+- Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
+- S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
+- SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
+- DEF 14A: Proxy — key votes, executive pay, board changes
+- 13F-HR: Institutional holdings — what big funds bought/sold
+- Other: Summarise the key investor-relevant facts
 
-        return response;
+Provide your analysis in JSON format:
+{
+  "sentiment": "bullish/bearish/neutral",
+  "confidence": 85,
+  "predicted_change": 5.2,
+  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
+  "key_highlights": ["point1", "point2", "point3"],
+  "bullish_factors": ["factor1", "factor2"],
+  "bearish_factors": ["risk1", "risk2"],
+  "reasoning": "2-3 sentence explanation of your overall assessment"
+}`;
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.anthropicKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1024,
+          messages: [{
+            role: 'user',
+            content: prompt
+          }]
+        })
       });
 
-      const data = await result.json();
-      const text = data.content[0].text;
-      const analysis = this.extractJSON(text);
+      if (!response.ok) {
+        throw new Error(`Claude API error: ${response.status}`);
+      }
 
-      return this.normalizeAnalysis(analysis, 'claude');
+      const data = await response.json();
+      const text = data.content[0].text;
+      
+      // Extract JSON from response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No JSON found in Claude response');
+      }
+      
+      const analysis = JSON.parse(jsonMatch[0]);
+      
+      return {
+        provider: 'claude',
+        ...analysis
+      };
     } catch (error) {
       console.error('Claude analysis error:', error);
       return null;
@@ -171,8 +109,6 @@ Provide your analysis in the following JSON format ONLY (no other text):
   }
 
   // Analyze filing with Gemini (Google)
-  // NOTE: gemini-1.5-pro was RETIRED by Google and returns 404 as of Feb 2026
-  // Using gemini-2.0-flash which is current and available
   async analyzeWithGemini(filingText, company, formType) {
     if (!this.geminiKey) {
       console.log('⚠️ No Gemini API key configured');
@@ -180,31 +116,62 @@ Provide your analysis in the following JSON format ONLY (no other text):
     }
 
     try {
-      const prompt = this.buildPrompt(filingText, company, formType);
+      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
 
-      const result = await this.retryWithBackoff(async () => {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.geminiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{ text: prompt }]
-            }]
-          })
-        });
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-        if (!response.ok) {
-          throw new Error(`Gemini API error: ${response.status}`);
-        }
+Filing type context:
+- 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
+- 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
+- Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
+- S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
+- SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
+- DEF 14A: Proxy — key votes, executive pay, board changes
+- 13F-HR: Institutional holdings — what big funds bought/sold
+- Other: Summarise the key investor-relevant facts
 
-        return response;
+Provide your analysis in JSON format:
+{
+  "sentiment": "bullish/bearish/neutral",
+  "confidence": 85,
+  "predicted_change": 5.2,
+  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
+  "key_highlights": ["point1", "point2", "point3"],
+  "bullish_factors": ["factor1", "factor2"],
+  "bearish_factors": ["risk1", "risk2"],
+  "reasoning": "2-3 sentence explanation of your overall assessment"
+}`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }]
+          }]
+        })
       });
 
-      const data = await result.json();
-      const text = data.candidates[0].content.parts[0].text;
-      const analysis = this.extractJSON(text);
+      if (!response.ok) {
+        throw new Error(`Gemini API error: ${response.status}`);
+      }
 
-      return this.normalizeAnalysis(analysis, 'gemini');
+      const data = await response.json();
+      const text = data.candidates[0].content.parts[0].text;
+      
+      // Extract JSON from response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No JSON found in Gemini response');
+      }
+      
+      const analysis = JSON.parse(jsonMatch[0]);
+      
+      return {
+        provider: 'gemini',
+        ...analysis
+      };
     } catch (error) {
       console.error('Gemini analysis error:', error);
       return null;
@@ -212,8 +179,6 @@ Provide your analysis in the following JSON format ONLY (no other text):
   }
 
   // Analyze filing with Grok (xAI)
-  // NOTE: grok-beta was RETIRED and returns 404 as of Feb 2026
-  // Using grok-4-1-fast-non-reasoning: $0.20/$0.50 per M tokens, 2M context, fast
   async analyzeWithGrok(filingText, company, formType) {
     if (!this.grokKey) {
       console.log('⚠️ No Grok API key configured');
@@ -221,36 +186,67 @@ Provide your analysis in the following JSON format ONLY (no other text):
     }
 
     try {
-      const prompt = this.buildPrompt(filingText, company, formType);
+      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
 
-      const result = await this.retryWithBackoff(async () => {
-        const response = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.grokKey}`
-          },
-          body: JSON.stringify({
-            model: 'grok-4-1-fast-non-reasoning',
-            messages: [{
-              role: 'user',
-              content: prompt
-            }]
-          })
-        });
+Filing content (truncated to 50k chars):
+${filingText.substring(0, 50000)}
 
-        if (!response.ok) {
-          throw new Error(`Grok API error: ${response.status}`);
-        }
+Filing type context:
+- 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
+- 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
+- Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
+- S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
+- SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
+- DEF 14A: Proxy — key votes, executive pay, board changes
+- 13F-HR: Institutional holdings — what big funds bought/sold
+- Other: Summarise the key investor-relevant facts
 
-        return response;
+Provide your analysis in JSON format:
+{
+  "sentiment": "bullish/bearish/neutral",
+  "confidence": 85,
+  "predicted_change": 5.2,
+  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
+  "key_highlights": ["point1", "point2", "point3"],
+  "bullish_factors": ["factor1", "factor2"],
+  "bearish_factors": ["risk1", "risk2"],
+  "reasoning": "2-3 sentence explanation of your overall assessment"
+}`;
+
+      const response = await fetch('https://api.x.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.grokKey}`
+        },
+        body: JSON.stringify({
+          model: 'grok-beta',
+          messages: [{
+            role: 'user',
+            content: prompt
+          }]
+        })
       });
 
-      const data = await result.json();
-      const text = data.choices[0].message.content;
-      const analysis = this.extractJSON(text);
+      if (!response.ok) {
+        throw new Error(`Grok API error: ${response.status}`);
+      }
 
-      return this.normalizeAnalysis(analysis, 'grok');
+      const data = await response.json();
+      const text = data.choices[0].message.content;
+      
+      // Extract JSON from response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No JSON found in Grok response');
+      }
+      
+      const analysis = JSON.parse(jsonMatch[0]);
+      
+      return {
+        provider: 'grok',
+        ...analysis
+      };
     } catch (error) {
       console.error('Grok analysis error:', error);
       return null;
@@ -260,23 +256,10 @@ Provide your analysis in the following JSON format ONLY (no other text):
   // Main method to analyze a filing with multiple AIs
   async analyzeFiling(filingText, company, formType, ticker, aiPreferences = null) {
     console.log(`🤖 Analyzing ${formType} filing for ${company}...`);
-    
-    // Skip low-priority filings to save API costs
-    if (!this.isHighPriorityFiling(formType)) {
-      console.log(`⏭️  Skipping low-priority filing type: ${formType}`);
-      return null;
-    }
 
-    // Default to Claude + Grok (Gemini 1.5 is retired, user can re-enable Gemini in settings)
-    const prefs = aiPreferences || { claude: true, gemini: false, grok: true };
-    
-    const enabledAIs = Object.keys(prefs).filter(k => prefs[k]);
-    if (enabledAIs.length === 0) {
-      console.log('⚠️ No AI providers enabled in preferences');
-      return null;
-    }
-    
-    console.log('🎯 Using AIs:', enabledAIs.join(', '));
+    // Default to all AIs if no preferences provided
+    const prefs = aiPreferences || { claude: true, gemini: true, grok: true };
+    console.log('🎯 Using AIs:', Object.keys(prefs).filter(k => prefs[k]).join(', '));
 
     // Run selected AI analyses in parallel
     const analyses = await Promise.all([
@@ -314,43 +297,31 @@ Provide your analysis in the following JSON format ONLY (no other text):
 
     // Average confidence and predicted change
     const avgConfidence = Math.round(
-      analyses.reduce((sum, a) => sum + a.confidence, 0) / analyses.length
+      analyses.reduce((sum, a) => sum + (a.confidence || 0), 0) / analyses.length
     );
     const avgPredictedChange = 
-      analyses.reduce((sum, a) => sum + a.predicted_change, 0) / analyses.length;
+      analyses.reduce((sum, a) => sum + (a.predicted_change || 0), 0) / analyses.length;
 
-    // Combine all highlights and factors (deduplicate)
+    // Combine all highlights and factors (deduplicate similar ones)
     const allHighlights = [...new Set(analyses.flatMap(a => a.key_highlights || []))];
     const allBullish = [...new Set(analyses.flatMap(a => a.bullish_factors || []))];
     const allBearish = [...new Set(analyses.flatMap(a => a.bearish_factors || []))];
 
-    const providers = analyses.map(a => a.provider);
+    // Use first available brief_summary, or build one from reasoning
+    const brief_summary = analyses.find(a => a.brief_summary)?.brief_summary
+      || analyses.find(a => a.reasoning)?.reasoning
+      || `${consensusSentiment} consensus from ${analyses.length} AI models`;
 
     return {
-      providers: providers,
-      // Database fields (what server.js saves)
-      brief_summary: `${consensusSentiment.charAt(0).toUpperCase() + consensusSentiment.slice(1)} consensus from ${providers.join(', ')} (${avgConfidence}% confidence). ${allHighlights.slice(0, 2).join('. ')}`,
-      detailed_summary: `Consensus from ${analyses.length} AI models: ${providers.join(', ')}. ${analyses.map(a => a.reasoning).filter(Boolean).join(' ')}`,
-      sentiment_direction: consensusSentiment,
-      expected_move_min: Math.min(...analyses.map(a => parseFloat(a.expected_move_min))).toFixed(2),
-      expected_move_max: Math.max(...analyses.map(a => parseFloat(a.expected_move_max))).toFixed(2),
-      expected_move_avg: avgPredictedChange.toFixed(2),
-      confidence_score: avgConfidence,
-      bullish_factors: allBullish.slice(0, 3),
-      bearish_factors: allBearish.slice(0, 3),
-      ai_consensus: {
-        providers: providers,
-        sentiment: consensusSentiment,
-        confidence: avgConfidence,
-        predicted_change: parseFloat(avgPredictedChange.toFixed(2)),
-        key_highlights: allHighlights.slice(0, 5)
-      },
-      // Original fields for direct use
+      providers: analyses.map(a => a.provider),
       sentiment: consensusSentiment,
       confidence: avgConfidence,
       predicted_change: parseFloat(avgPredictedChange.toFixed(2)),
+      brief_summary,
       key_highlights: allHighlights.slice(0, 5),
-      reasoning: `Consensus from ${analyses.length} AI models: ${providers.join(', ')}`
+      bullish_factors: allBullish.slice(0, 3),
+      bearish_factors: allBearish.slice(0, 3),
+      reasoning: `Consensus from ${analyses.length} AI models: ${analyses.map(a => a.provider).join(', ')}`
     };
   }
 }

@@ -1,0 +1,68 @@
+name: Deploy to Hetzner VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            echo "🚀 Starting deploy..."
+
+            cd ~/stockmagic
+
+            echo "📥 Pulling latest files from GitHub..."
+
+            # Backend files
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/server.js" \
+              -o backend/server.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/package.json" \
+              -o backend/package.json
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/migrate.js" \
+              -o backend/migrate.js
+
+            # Backend services
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/services/aiAnalysis.js" \
+              -o backend/services/aiAnalysis.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/services/secEdgar.js" \
+              -o backend/services/secEdgar.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/services/filingChecker.js" \
+              -o backend/services/filingChecker.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/services/notifications.js" \
+              -o backend/services/notifications.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/backend/services/shortInterest.js" \
+              -o backend/services/shortInterest.js
+
+            # Frontend files
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/frontend/src/App.js" \
+              -o frontend/src/App.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/frontend/src/Auth.js" \
+              -o frontend/src/Auth.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/frontend/src/index.js" \
+              -o frontend/src/index.js
+            curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/frontend/package.json" \
+              -o frontend/package.json
+
+            echo "🐳 Rebuilding Docker containers..."
+            sudo docker compose up --build -d
+
+            echo "⏳ Waiting for containers to be healthy..."
+            sleep 10
+
+            echo "✅ Deploy complete!"
+            sudo docker compose ps
