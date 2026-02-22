@@ -190,7 +190,7 @@ For "numbers_confidence":
           'Authorization': `Bearer ${this.grokKey}`
         },
         body: JSON.stringify({
-          model: 'grok-beta',
+          model: 'grok-2-latest',
           messages: [{
             role: 'user',
             content: prompt
@@ -199,6 +199,8 @@ For "numbers_confidence":
       });
 
       if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        console.error(`Grok API error body: ${errorBody}`);
         throw new Error(`Grok API error: ${response.status}`);
       }
 
