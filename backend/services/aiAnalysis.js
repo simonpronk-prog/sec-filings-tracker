@@ -31,23 +31,25 @@ class AIAnalysisService {
     return priority.level === 'high';
   }
 
-  // Analyze filing with Claude (Anthropic)
-  async analyzeWithClaude(filingText, company, formType) {
-    if (!this.anthropicKey) {
-      console.log('⚠️ No Anthropic API key configured');
-      return null;
-    }
+  // Build the standard prompt for all AI providers
+  buildPrompt(filingText, company, formType) {
+    return `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
 
-    try {
-      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
+CRITICAL RULES FOR NUMBERS AND DATA:
+- ONLY cite numbers (share counts, dollar amounts, percentages, dates) that appear VERBATIM in the filing text below.
+- If the filing text is unclear or you cannot find a specific number, say "not specified in filing" rather than guessing.
+- NEVER estimate, round, or invent any numerical figure. If the text says "403,025 shares" you must say "403,025 shares", not "approximately 400,000 shares" or "53 million shares".
+- For dollar amounts, use exactly what the filing states. Do not calculate or convert unless the filing itself provides the conversion.
+- If the filing text appears truncated or incomplete, note this in your summary and only report numbers you can actually see.
 
-Filing content (truncated to 50k chars):
+Filing content (may be truncated):
 ${filingText.substring(0, 50000)}
 
 Filing type context:
 - 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
 - 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
 - Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
+- Form 144: Proposed insider sale — who filed to sell, how many shares, estimated value if stated
 - S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
 - SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
 - DEF 14A: Proxy — key votes, executive pay, board changes
@@ -56,15 +58,32 @@ Filing type context:
 
 Provide your analysis in JSON format:
 {
-  "sentiment": "bullish/bearish/neutral",
+  "sentiment_direction": "bullish" or "bearish" or "neutral",
   "confidence": 85,
   "predicted_change": 5.2,
-  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
+  "brief_summary": "One sentence plain-English summary. Only include specific numbers if they appear in the filing text above.",
+  "detailed_summary": "2-3 sentence detailed summary with key numbers quoted directly from the filing.",
   "key_highlights": ["point1", "point2", "point3"],
   "bullish_factors": ["factor1", "factor2"],
   "bearish_factors": ["risk1", "risk2"],
-  "reasoning": "2-3 sentence explanation of your overall assessment"
-}`;
+  "reasoning": "2-3 sentence explanation of your overall assessment",
+  "numbers_confidence": "high" or "low"
+}
+
+For "numbers_confidence":
+- "high" = you found clear, specific numbers in the filing text and cited them exactly
+- "low" = the filing text was unclear, truncated, or you could not locate specific figures`;
+  }
+
+  // Analyze filing with Claude (Anthropic)
+  async analyzeWithClaude(filingText, company, formType) {
+    if (!this.anthropicKey) {
+      console.log('⚠️ No Anthropic API key configured');
+      return null;
+    }
+
+    try {
+      const prompt = this.buildPrompt(filingText, company, formType);
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -116,32 +135,7 @@ Provide your analysis in JSON format:
     }
 
     try {
-      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
-
-Filing content (truncated to 50k chars):
-${filingText.substring(0, 50000)}
-
-Filing type context:
-- 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
-- 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
-- Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
-- S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
-- SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
-- DEF 14A: Proxy — key votes, executive pay, board changes
-- 13F-HR: Institutional holdings — what big funds bought/sold
-- Other: Summarise the key investor-relevant facts
-
-Provide your analysis in JSON format:
-{
-  "sentiment": "bullish/bearish/neutral",
-  "confidence": 85,
-  "predicted_change": 5.2,
-  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
-  "key_highlights": ["point1", "point2", "point3"],
-  "bullish_factors": ["factor1", "factor2"],
-  "bearish_factors": ["risk1", "risk2"],
-  "reasoning": "2-3 sentence explanation of your overall assessment"
-}`;
+      const prompt = this.buildPrompt(filingText, company, formType);
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.geminiKey}`, {
         method: 'POST',
@@ -186,32 +180,7 @@ Provide your analysis in JSON format:
     }
 
     try {
-      const prompt = `You are a financial analyst. Analyze this ${formType} SEC filing for ${company}.
-
-Filing content (truncated to 50k chars):
-${filingText.substring(0, 50000)}
-
-Filing type context:
-- 10-K / 10-Q / 20-F / 6-K: Financial reports — focus on revenue, earnings, guidance, risks
-- 8-K: Material event — identify the event type (earnings, M&A, leadership change, etc.)
-- Form 4 / Form 3 / Form 5: Insider transactions — who bought/sold, how many shares, at what price, is this bullish/bearish signal?
-- S-1 / S-4: Registration — IPO or merger details, valuation, use of proceeds
-- SC 13D / SC 13G: Large shareholder — who owns how much, activist or passive?
-- DEF 14A: Proxy — key votes, executive pay, board changes
-- 13F-HR: Institutional holdings — what big funds bought/sold
-- Other: Summarise the key investor-relevant facts
-
-Provide your analysis in JSON format:
-{
-  "sentiment": "bullish/bearish/neutral",
-  "confidence": 85,
-  "predicted_change": 5.2,
-  "brief_summary": "One sentence plain-English summary of what happened and why it matters",
-  "key_highlights": ["point1", "point2", "point3"],
-  "bullish_factors": ["factor1", "factor2"],
-  "bearish_factors": ["risk1", "risk2"],
-  "reasoning": "2-3 sentence explanation of your overall assessment"
-}`;
+      const prompt = this.buildPrompt(filingText, company, formType);
 
       const response = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
@@ -284,10 +253,33 @@ Provide your analysis in JSON format:
   // Aggregate multiple AI analyses into consensus
   aggregateAnalyses(analyses) {
     if (analyses.length === 0) return null;
-    if (analyses.length === 1) return analyses[0];
+
+    if (analyses.length === 1) {
+      const a = analyses[0];
+      const predictedChange = parseFloat(a.predicted_change) || 0;
+      return {
+        ...a,
+        sentiment_direction: a.sentiment_direction || a.sentiment || 'neutral',
+        confidence_score: a.confidence || 50,
+        expected_move_avg: predictedChange.toFixed(2),
+        expected_move_min: predictedChange.toFixed(2),
+        expected_move_max: predictedChange.toFixed(2),
+        detailed_summary: a.detailed_summary || a.reasoning || null,
+        numbers_confidence: a.numbers_confidence || 'low',
+        ai_consensus: {
+          provider_count: 1,
+          analyses: [{
+            provider: a.provider,
+            sentiment: a.sentiment_direction || a.sentiment,
+            expected_move: predictedChange,
+            confidence: a.confidence
+          }]
+        }
+      };
+    }
 
     // Calculate consensus sentiment
-    const sentiments = analyses.map(a => a.sentiment);
+    const sentiments = analyses.map(a => a.sentiment_direction || a.sentiment);
     const sentimentCounts = sentiments.reduce((acc, s) => {
       acc[s] = (acc[s] || 0) + 1;
       return acc;
@@ -299,8 +291,8 @@ Provide your analysis in JSON format:
     const avgConfidence = Math.round(
       analyses.reduce((sum, a) => sum + (a.confidence || 0), 0) / analyses.length
     );
-    const avgPredictedChange = 
-      analyses.reduce((sum, a) => sum + (a.predicted_change || 0), 0) / analyses.length;
+    const avgPredictedChange =
+      analyses.reduce((sum, a) => sum + (parseFloat(a.predicted_change) || 0), 0) / analyses.length;
 
     // Combine all highlights and factors (deduplicate similar ones)
     const allHighlights = [...new Set(analyses.flatMap(a => a.key_highlights || []))];
@@ -312,16 +304,32 @@ Provide your analysis in JSON format:
       || analyses.find(a => a.reasoning)?.reasoning
       || `${consensusSentiment} consensus from ${analyses.length} AI models`;
 
+    const providers = analyses.map(a => a.provider);
+
     return {
-      providers: analyses.map(a => a.provider),
-      sentiment: consensusSentiment,
-      confidence: avgConfidence,
+      providers,
+      sentiment_direction: consensusSentiment,
+      confidence_score: avgConfidence,
       predicted_change: parseFloat(avgPredictedChange.toFixed(2)),
+      expected_move_avg: avgPredictedChange.toFixed(2),
+      expected_move_min: Math.min(...analyses.map(a => parseFloat(a.predicted_change) || 0)).toFixed(2),
+      expected_move_max: Math.max(...analyses.map(a => parseFloat(a.predicted_change) || 0)).toFixed(2),
       brief_summary,
+      detailed_summary: analyses.find(a => a.detailed_summary)?.detailed_summary || null,
       key_highlights: allHighlights.slice(0, 5),
       bullish_factors: allBullish.slice(0, 3),
       bearish_factors: allBearish.slice(0, 3),
-      reasoning: `Consensus from ${analyses.length} AI models: ${analyses.map(a => a.provider).join(', ')}`
+      numbers_confidence: analyses.every(a => a.numbers_confidence === 'high') ? 'high' : 'low',
+      reasoning: `Consensus from ${analyses.length} AI models: ${providers.join(', ')}`,
+      ai_consensus: {
+        provider_count: analyses.length,
+        analyses: analyses.map(a => ({
+          provider: a.provider,
+          sentiment: a.sentiment_direction || a.sentiment,
+          expected_move: parseFloat(a.predicted_change) || 0,
+          confidence: a.confidence
+        }))
+      }
     };
   }
 }

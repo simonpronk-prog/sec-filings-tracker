@@ -271,7 +271,7 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{t.ticker || t.name}</span>
                       {parseInt(t.unread_count) > 0 && <span style={{ background: '#667eea', color: 'white', borderRadius: '12px', padding: '0.15rem 0.6rem', fontSize: '0.75rem', fontWeight: 'bold' }}>{t.unread_count} new</span>}
-                      {t.latest_form_type && <span style={{ background: '#f0f0f0', color: '#555', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}>{t.latest_form_type}</span>}
+                      {t.latest_form_type && <span style={{ background: '#f0f0f0', color: '#555', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}>{t.latest_form_type} — {getFilingInfo(t.latest_form_type).desc.split('—')[0].trim()}</span>}
                     </div>
                     <div style={{ color: '#666', fontSize: '0.85rem' }}>{t.name}{t.latest_filing_date && ` · ${new Date(t.latest_filing_date).toLocaleDateString()}`}</div>
                     {t.latest_summary && <div style={{ color: '#555', fontSize: '0.85rem', marginTop: '0.5rem', lineHeight: '1.4' }}>🤖 {t.latest_summary.length > 150 ? t.latest_summary.slice(0, 150) + '...' : t.latest_summary}</div>}
@@ -302,7 +302,7 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
                       <span style={{ fontWeight: 'bold' }}>{f.ticker}</span>
-                      <span style={{ background: '#f0f0f0', padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.75rem', color: '#555' }}>{f.form_type}</span>
+                      <span style={{ background: '#f0f0f0', padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.75rem', color: '#555' }}>{f.form_type} — {getFilingInfo(f.form_type).desc.split('—')[0].trim()}</span>
                       <span style={{ fontSize: '0.8rem', color: '#999' }}>{f.filed_date ? new Date(f.filed_date).toLocaleDateString() : ''}</span>
                     </div>
                     {f.ai_summary && <div style={{ fontSize: '0.85rem', color: '#555' }}>{f.ai_summary.length > 120 ? f.ai_summary.slice(0, 120) + '...' : f.ai_summary}</div>}
@@ -461,7 +461,7 @@ function Filings({ filings, loading, error, dateFrom, dateTo, setDateFrom, setDa
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                           <span style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{f.ticker || f.company || 'Unknown'}</span>
-                          <span style={{ padding: '0.25rem 0.5rem', background: '#667eea', color: 'white', borderRadius: '4px', fontSize: '0.85rem' }}>{f.formType}</span>
+                          <span style={{ padding: '0.25rem 0.5rem', background: '#667eea', color: 'white', borderRadius: '4px', fontSize: '0.85rem' }}>{f.formType} — {getFilingInfo(f.formType).desc.split('—')[0].trim()}</span>
                         </div>
                         <div style={{ color: '#666', fontSize: '0.85rem', marginTop: '0.25rem' }}>
                           {info.desc} · Filed: {f.filedDate ? new Date(f.filedDate).toLocaleDateString() : 'N/A'}
@@ -477,6 +477,7 @@ function Filings({ filings, loading, error, dateFrom, dateTo, setDateFrom, setDa
                     )}
                   </div>
                   {has && <div style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '4px', borderLeft: `4px solid ${s.color}`, fontSize: '0.95rem', lineHeight: '1.5', color: '#333' }}>🤖 {f.ai_summary}</div>}
+                  {has && f.numbers_confidence === 'low' && <div style={{ padding: '0.5rem 0.75rem', background: '#fff3cd', borderRadius: '4px', borderLeft: '4px solid #ffc107', fontSize: '0.85rem', color: '#856404', marginTop: '0.5rem' }}>⚠️ Numbers in this analysis may be approximate — the filing text was unclear or truncated</div>}
                   {!has && <div style={{ padding: '0.75rem', background: '#fff9e6', borderRadius: '4px', borderLeft: '4px solid #ffc107', fontSize: '0.9rem', color: '#856404' }}>⏳ AI analysis pending — will be processed on next check</div>}
                   <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     <a href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${f.cik}&type=${f.formType}&dateb=&owner=exclude&count=40`}

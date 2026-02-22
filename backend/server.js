@@ -465,6 +465,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               bearish_factors: existingFiling.bearish_factors,
               ai_consensus: existingFiling.ai_consensus,
               short_interest_percent: existingFiling.short_interest_percent,
+              numbers_confidence: existingFiling.numbers_confidence,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
             enrichedFilings.push(filingData);
@@ -513,13 +514,13 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
             // Save to database
             await pool.query(
               `INSERT INTO filings (
-                user_id, cik, form_type, filed_date, description, accession_number, 
+                user_id, cik, form_type, filed_date, description, accession_number,
                 company, primary_document, report_date, ai_summary, ai_detailed_summary,
                 sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
                 confidence_score, bullish_factors, bearish_factors, ai_consensus,
-                short_interest_percent, short_interest_updated_at, analysis_generated_at
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
-              ON CONFLICT (user_id, accession_number) 
+                short_interest_percent, short_interest_updated_at, numbers_confidence, analysis_generated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW())
+              ON CONFLICT (user_id, accession_number)
               DO UPDATE SET
                 ai_summary = EXCLUDED.ai_summary,
                 ai_detailed_summary = EXCLUDED.ai_detailed_summary,
@@ -533,6 +534,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 ai_consensus = EXCLUDED.ai_consensus,
                 short_interest_percent = EXCLUDED.short_interest_percent,
                 short_interest_updated_at = EXCLUDED.short_interest_updated_at,
+                numbers_confidence = EXCLUDED.numbers_confidence,
                 analysis_generated_at = EXCLUDED.analysis_generated_at`,
               [
                 req.user.id, filing.cik, filing.formType, filing.filedDate,
@@ -544,7 +546,8 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 analysis.confidence_score, analysis.bullish_factors,
                 analysis.bearish_factors, JSON.stringify(analysis.ai_consensus),
                 shortData?.short_volume_percent || null,
-                shortData?.updated_at || null
+                shortData?.updated_at || null,
+                analysis.numbers_confidence || 'low'
               ]
             );
           } else {
@@ -921,6 +924,7 @@ async function initDatabase() {
         ai_consensus JSONB,
         short_interest_percent DECIMAL(5,2),
         short_interest_updated_at TIMESTAMP,
+        numbers_confidence VARCHAR(10),
         analysis_generated_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, accession_number)
