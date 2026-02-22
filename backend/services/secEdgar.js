@@ -150,41 +150,62 @@ class SECEdgarService {
       
       let mainDocument = null;
       let mainDocType = null;
-      
+      let primaryDocMatch = null;
+
       for (let i = 1; i < documentSections.length; i++) {
         const section = documentSections[i];
         const typeMatch = section.match(/<TYPE>([^\n]+)/);
         const filenameMatch = section.match(/<FILENAME>([^\n]+)/);
         const type = typeMatch ? typeMatch[1].trim() : null;
         const filename = filenameMatch ? filenameMatch[1].trim().toLowerCase() : '';
-        
+
         console.log(`  📄 Document ${i}: TYPE=${type}, FILENAME=${filename}, size=${section.length} chars`);
-        
+
+        // First priority: match the primaryDocument filename from SEC EDGAR metadata
+        if (primaryDocument && filename === primaryDocument.toLowerCase()) {
+          primaryDocMatch = section;
+          console.log(`  ⭐ Matched primaryDocument: ${primaryDocument}`);
+          continue;
+        }
+
         // Skip exhibits
         if (type && type.startsWith('EX-')) {
           console.log(`  ⏭️ Skipping exhibit`);
           continue;
         }
-        
+
         // Skip XML/XBRL files - these are machine-readable metadata, not human-readable content
-        if (filename.includes('.xml') || filename.includes('xbrl')) {
+        if (filename.includes('.xml') || filename.includes('xbrl') || filename.includes('_htm.xml')) {
           console.log(`  ⏭️ Skipping XML/XBRL file`);
           continue;
         }
-        
-        // Skip graphics and other non-content files
-        if (type && (type.includes('GRAPHIC') || type.includes('ZIP') || type.includes('EXCEL'))) {
-          console.log(`  ⏭️ Skipping graphic/binary file`);
+
+        // Skip graphics, binary, and metadata files
+        if (type && (type.includes('GRAPHIC') || type.includes('ZIP') || type.includes('EXCEL') || type === 'XML' || type === 'JSON')) {
+          console.log(`  ⏭️ Skipping non-content file (TYPE=${type})`);
           continue;
         }
-        
-        // Look for the main filing type (10-K, 10-Q, 8-K, etc.)
-        // Select the LARGEST document that passes our filters - this is the actual filing
+
+        // Skip documents that are mostly XBRL/XML tags (inline XBRL in .htm files)
+        const xbrlTagCount = (section.match(/<(ix:|xbrli:|xbrldi:)/gi) || []).length;
+        if (xbrlTagCount > 100) {
+          console.log(`  ⏭️ Skipping inline XBRL document (${xbrlTagCount} XBRL tags)`);
+          continue;
+        }
+
+        // Fallback: select the LARGEST document that passes our filters
         if (type && section.length > (mainDocument?.length || 0)) {
           mainDocument = section;
           mainDocType = type;
           console.log(`  ✅ New candidate for main document (larger)`);
         }
+      }
+
+      // Prefer the primaryDocument match over the largest document
+      if (primaryDocMatch) {
+        mainDocument = primaryDocMatch;
+        mainDocType = 'PRIMARY';
+        console.log(`  ✅ Using primaryDocument match`);
       }
       
       if (!mainDocument) {
