@@ -98,7 +98,7 @@ function App() {
   const filteredFilings = filings.filter(f => {
     if (!filingsSearchQuery) return true;
     const q = filingsSearchQuery.toLowerCase();
-    return f.company?.toLowerCase().includes(q) || f.formType?.toLowerCase().includes(q) || f.ticker?.toLowerCase().includes(q);
+    return f.company?.toLowerCase().includes(q) || f.formType?.toLowerCase().includes(q) || f.ticker?.toLowerCase().includes(q) || f.cik?.toString().includes(q) || f.description?.toLowerCase().includes(q);
   });
 
   const sentiment = (s) => {
@@ -140,7 +140,7 @@ function App() {
         {activeTab === 'dashboard' && (<Dashboard
           dashboard={dashboard} loading={dashboardLoading} filter={dashboardFilter}
           setFilter={setDashboardFilter} onRefresh={loadDashboard} sentiment={sentiment}
-          onTickerClick={(q) => { setActiveTab('filings'); setFilingsSearchQuery(q); }}
+          onTickerClick={(q) => { setFilingsSearchQuery(q); setActiveTab('filings'); loadFilings(); }}
         />)}
 
         {/* ========== WATCHLIST ========== */}
@@ -215,7 +215,7 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
             .map(t => {
               const s = sentiment(t.latest_sentiment);
               return (
-                <div key={t.cik} onClick={() => onTickerClick(t.ticker || t.name)}
+                <div key={t.cik} onClick={() => onTickerClick(t.cik)}
                   style={{ background: 'white', padding: '1.25rem', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
                     cursor: 'pointer', borderLeft: `4px solid ${s.color}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ flex: 1 }}>
@@ -247,7 +247,7 @@ function Dashboard({ dashboard, loading, filter, setFilter, onRefresh, sentiment
             {dashboard.needleMovers.map(f => {
               const s = sentiment(f.sentiment_direction);
               return (
-                <div key={f.accession_number} onClick={() => onTickerClick(f.ticker || f.company)}
+                <div key={f.accession_number} onClick={() => onTickerClick(f.cik)}
                   style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                     cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                     borderLeft: f.read ? '3px solid #eee' : '3px solid #667eea' }}>

@@ -462,7 +462,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               short_interest_percent: existingFiling.short_interest_percent,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
-            enrichedFilings.push(filingData);
+            filingData.ticker = ticker; enrichedFilings.push(filingData);
             continue;
           }
         }
@@ -564,7 +564,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
           );
         }
 
-        enrichedFilings.push(filingData);
+        filingData.ticker = ticker; enrichedFilings.push(filingData);
       } catch (filingError) {
         console.error('⚠️ Error processing filing:', filing.accessionNumber, filingError.message);
         // Add filing without analysis
