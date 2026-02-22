@@ -139,7 +139,7 @@ class SECEdgarService {
   // Parse and extract key information from filing
   async parseFilingContent(accessionNumber, cik, primaryDocument) {
     try {
-      console.log('🚀 [VERSION 2.0] Using improved document selection with FILENAME filtering');
+      console.log('🚀 [VERSION 2.1] Improved doc selection — skips XML primaryDocuments, fixed Grok env var');
       
       const content = await this.getFilingText(accessionNumber, cik, primaryDocument);
       
@@ -162,10 +162,16 @@ class SECEdgarService {
         console.log(`  📄 Document ${i}: TYPE=${type}, FILENAME=${filename}, size=${section.length} chars`);
 
         // First priority: match the primaryDocument filename from SEC EDGAR metadata
+        // But skip if it's an XML file — XML primaryDocuments (e.g. primary_doc.xml for Form 144)
+        // contain machine-readable XBRL, not human-readable content
         if (primaryDocument && filename === primaryDocument.toLowerCase()) {
-          primaryDocMatch = section;
-          console.log(`  ⭐ Matched primaryDocument: ${primaryDocument}`);
-          continue;
+          if (filename.endsWith('.xml')) {
+            console.log(`  ⏭️ Skipping XML primaryDocument: ${primaryDocument} (machine-readable)`);
+          } else {
+            primaryDocMatch = section;
+            console.log(`  ⭐ Matched primaryDocument: ${primaryDocument}`);
+            continue;
+          }
         }
 
         // Skip exhibits

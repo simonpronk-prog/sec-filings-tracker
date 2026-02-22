@@ -4,7 +4,7 @@ class AIAnalysisService {
   constructor() {
     this.anthropicKey = process.env.ANTHROPIC_API_KEY;
     this.geminiKey = process.env.GEMINI_API_KEY;
-    this.grokKey = process.env.GROK_API_KEY;
+    this.grokKey = process.env.XAI_API_KEY;
   }
 
   // Get filing priority information
