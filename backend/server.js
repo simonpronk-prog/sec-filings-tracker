@@ -5,23 +5,23 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { Pool } = require('pg');
-require('dotenv').config();
-
 const { authenticator } = require('otplib');
+require('dotenv').config();
 
 // TOTP helpers using otplib
 const TOTP = {
   generateSecret() {
     return authenticator.generateSecret();
   },
+
   verify(token, secret) {
     return authenticator.check(token, secret);
   },
+
   getUri(secret, email, issuer = 'SEC Filings Tracker') {
     return authenticator.keyuri(email, issuer, secret);
   }
 };
-
 
 // Import services
 const secEdgar = require('./services/secEdgar');
@@ -441,7 +441,11 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
           [req.user.id, filing.accessionNumber]
         );
 
-        let filingData = filing;
+        // Get ticker for this company (must be before any early-continue paths)
+        const companyInfo = watchlist.rows.find(w => w.cik === filing.cik);
+        const ticker = companyInfo?.ticker;
+
+        let filingData = { ...filing, ticker };
         
         if (existing.rows.length > 0) {
           // Use existing analysis if available
@@ -449,6 +453,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
           if (existingFiling.ai_summary) {
             filingData = {
               ...filing,
+              ticker,
               ai_summary: existingFiling.ai_summary,
               ai_detailed_summary: existingFiling.ai_detailed_summary,
               sentiment_direction: existingFiling.sentiment_direction,
@@ -462,98 +467,100 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               short_interest_percent: existingFiling.short_interest_percent,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
-            filingData.ticker = ticker; enrichedFilings.push(filingData);
+            enrichedFilings.push(filingData);
             continue;
           }
         }
-
-        // Get ticker for this company
-        const companyInfo = watchlist.rows.find(w => w.cik === filing.cik);
-        const ticker = companyInfo?.ticker;
 
         // Add priority info
         const priority = aiAnalysis.getFilingPriority(filing.formType);
         filingData.priority = priority;
 
-        // Only analyze high-priority filings
-        if (priority.level === 'high' && ticker) {
-          console.log(`🤖 Analyzing ${filing.formType} for ${filing.company}...`);
-          
-          // Fetch filing text using VERSION 2.0 parser
-          try {
-            const filingText = await secEdgar.parseFilingContent(
-              filing.accessionNumber,
-              filing.cik,
-              filing.primaryDocument
-            );
+        // Analyze ALL filings with AI
+        console.log(`🤖 Analyzing ${filing.formType} for ${filing.company}...`);
+        
+        try {
+          const filingText = await secEdgar.parseFilingContent(
+            filing.accessionNumber,
+            filing.cik,
+            filing.primaryDocument
+          );
 
-            // Get AI analysis (runs selected AIs based on user preferences)
-            const analysis = await aiAnalysis.analyzeFiling(
-              filingText,
-              filing.company,
-              filing.formType,
+          // Get AI analysis (runs selected AIs based on user preferences)
+          const analysis = await aiAnalysis.analyzeFiling(
+            filingText,
+            filing.company,
+            filing.formType,
+            ticker,
+            aiPreferences
+          );
+
+          if (analysis) {
+            // Get short interest data
+            const shortData = await shortInterest.getShortInterest(ticker);
+
+            // Add analysis to filing data
+            filingData = {
+              ...filing,
               ticker,
-              aiPreferences
+              ...analysis,
+              ai_summary: analysis.brief_summary,
+              short_interest_percent: shortData?.short_volume_percent || null,
+              short_interest_updated_at: shortData?.updated_at || null,
+              priority
+            };
+
+            // Save to database
+            await pool.query(
+              `INSERT INTO filings (
+                user_id, cik, form_type, filed_date, description, accession_number, 
+                company, primary_document, report_date, ai_summary, ai_detailed_summary,
+                sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
+                confidence_score, bullish_factors, bearish_factors, ai_consensus,
+                short_interest_percent, short_interest_updated_at, analysis_generated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
+              ON CONFLICT (user_id, accession_number) 
+              DO UPDATE SET
+                ai_summary = EXCLUDED.ai_summary,
+                ai_detailed_summary = EXCLUDED.ai_detailed_summary,
+                sentiment_direction = EXCLUDED.sentiment_direction,
+                expected_move_min = EXCLUDED.expected_move_min,
+                expected_move_max = EXCLUDED.expected_move_max,
+                expected_move_avg = EXCLUDED.expected_move_avg,
+                confidence_score = EXCLUDED.confidence_score,
+                bullish_factors = EXCLUDED.bullish_factors,
+                bearish_factors = EXCLUDED.bearish_factors,
+                ai_consensus = EXCLUDED.ai_consensus,
+                short_interest_percent = EXCLUDED.short_interest_percent,
+                short_interest_updated_at = EXCLUDED.short_interest_updated_at,
+                analysis_generated_at = EXCLUDED.analysis_generated_at`,
+              [
+                req.user.id, filing.cik, filing.formType, filing.filedDate,
+                filing.description, filing.accessionNumber, filing.company,
+                filing.primaryDocument, filing.reportDate,
+                analysis.brief_summary, analysis.detailed_summary,
+                analysis.sentiment_direction, analysis.expected_move_min,
+                analysis.expected_move_max, analysis.expected_move_avg,
+                analysis.confidence_score, analysis.bullish_factors,
+                analysis.bearish_factors, JSON.stringify(analysis.ai_consensus),
+                shortData?.short_volume_percent || null,
+                shortData?.updated_at || null
+              ]
             );
-
-            if (analysis) {
-              // Get short interest data
-              const shortData = await shortInterest.getShortInterest(ticker);
-
-              // Add analysis to filing data
-              filingData = {
-                ...filing,
-                ...analysis,
-                ai_summary: analysis.brief_summary,
-                short_interest_percent: shortData?.short_volume_percent || null,
-                short_interest_updated_at: shortData?.updated_at || null,
-                priority
-              };
-
-              // Save to database
-              await pool.query(
-                `INSERT INTO filings (
-                  user_id, cik, form_type, filed_date, description, accession_number, 
-                  company, primary_document, report_date, ai_summary, ai_detailed_summary,
-                  sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
-                  confidence_score, bullish_factors, bearish_factors, ai_consensus,
-                  short_interest_percent, short_interest_updated_at, analysis_generated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
-                ON CONFLICT (user_id, accession_number) 
-                DO UPDATE SET
-                  ai_summary = EXCLUDED.ai_summary,
-                  ai_detailed_summary = EXCLUDED.ai_detailed_summary,
-                  sentiment_direction = EXCLUDED.sentiment_direction,
-                  expected_move_min = EXCLUDED.expected_move_min,
-                  expected_move_max = EXCLUDED.expected_move_max,
-                  expected_move_avg = EXCLUDED.expected_move_avg,
-                  confidence_score = EXCLUDED.confidence_score,
-                  bullish_factors = EXCLUDED.bullish_factors,
-                  bearish_factors = EXCLUDED.bearish_factors,
-                  ai_consensus = EXCLUDED.ai_consensus,
-                  short_interest_percent = EXCLUDED.short_interest_percent,
-                  short_interest_updated_at = EXCLUDED.short_interest_updated_at,
-                  analysis_generated_at = EXCLUDED.analysis_generated_at`,
-                [
-                  req.user.id, filing.cik, filing.formType, filing.filedDate,
-                  filing.description, filing.accessionNumber, filing.company,
-                  filing.primaryDocument, filing.reportDate,
-                  analysis.brief_summary, analysis.detailed_summary,
-                  analysis.sentiment_direction, analysis.expected_move_min,
-                  analysis.expected_move_max, analysis.expected_move_avg,
-                  analysis.confidence_score, analysis.bullish_factors,
-                  analysis.bearish_factors, JSON.stringify(analysis.ai_consensus),
-                  shortData?.short_volume_percent || null,
-                  shortData?.updated_at || null
-                ]
-              );
-            }
-          } catch (analysisError) {
-            console.error('⚠️ Analysis error for filing:', filing.accessionNumber, analysisError.message);
-            // Continue with unanalyzed filing
+          } else {
+            // Analysis returned null (e.g. AI keys not configured) - save without analysis
+            await pool.query(
+              `INSERT INTO filings (user_id, cik, form_type, filed_date, description, accession_number, company, primary_document, report_date)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (user_id, accession_number) DO NOTHING`,
+              [req.user.id, filing.cik, filing.formType, filing.filedDate,
+               filing.description, filing.accessionNumber, filing.company,
+               filing.primaryDocument, filing.reportDate]
+            );
           }
-        } else {
-          // Low priority filing - just save without analysis
+        } catch (analysisError) {
+          console.error('⚠️ Analysis error for filing:', filing.accessionNumber, analysisError.message);
+          // Save without analysis so filing still appears in UI
           await pool.query(
             `INSERT INTO filings (user_id, cik, form_type, filed_date, description, accession_number, company, primary_document, report_date)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -564,7 +571,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
           );
         }
 
-        filingData.ticker = ticker; enrichedFilings.push(filingData);
+        enrichedFilings.push(filingData);
       } catch (filingError) {
         console.error('⚠️ Error processing filing:', filing.accessionNumber, filingError.message);
         // Add filing without analysis
