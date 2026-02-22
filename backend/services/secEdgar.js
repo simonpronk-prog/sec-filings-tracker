@@ -139,7 +139,7 @@ class SECEdgarService {
   // Parse and extract key information from filing
   async parseFilingContent(accessionNumber, cik, primaryDocument) {
     try {
-      console.log('🚀 [VERSION 2.1] Improved doc selection — skips XML primaryDocuments, fixed Grok env var');
+      console.log('🚀 [VERSION 2.2] Strips inline XBRL headers from primaryDocument for clean text extraction');
       
       const content = await this.getFilingText(accessionNumber, cik, primaryDocument);
       
@@ -223,11 +223,20 @@ class SECEdgarService {
       }
       
       // Extract text from HTML (remove tags)
+      // First strip inline XBRL header/hidden sections — these contain machine-readable
+      // metadata (context refs, unit definitions) that pollute the extracted text.
+      // The actual financial content is outside these sections.
       const textContent = mainDocument
+        .replace(/<ix:header>[\s\S]*?<\/ix:header>/gi, '')
+        .replace(/<ix:hidden>[\s\S]*?<\/ix:hidden>/gi, '')
+        .replace(/<xbrli:context[\s\S]*?<\/xbrli:context>/gi, '')
+        .replace(/<xbrli:unit[\s\S]*?<\/xbrli:unit>/gi, '')
+        .replace(/<link:[\s\S]*?>/gi, '')
         .replace(/<script[^>]*>.*?<\/script>/gis, '')
         .replace(/<style[^>]*>.*?<\/style>/gis, '')
         .replace(/<[^>]+>/g, ' ')
         .replace(/&nbsp;/g, ' ')
+        .replace(/&#\d+;/g, ' ')
         .replace(/&[a-z]+;/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
