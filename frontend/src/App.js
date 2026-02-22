@@ -87,7 +87,7 @@ function App() {
   }, [dateFrom, dateTo]);
 
   useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); } }, [isAuthenticated]);
-  useEffect(() => { if (isAuthenticated && activeTab === 'dashboard') loadDashboard(); }, [activeTab]);
+  useEffect(() => { if (isAuthenticated && activeTab === 'dashboard' && !dashboard) loadDashboard(); }, [activeTab]);
   useEffect(() => { if (isAuthenticated && watchlist.length > 0 && activeTab === 'filings' && filings.length === 0) loadFilings(); }, [watchlist, activeTab, isAuthenticated, loadFilings, filings.length]);
 
   useEffect(() => {
@@ -190,7 +190,7 @@ function App() {
         {activeTab === 'dashboard' && (<Dashboard
           dashboard={dashboard} loading={dashboardLoading} filter={dashboardFilter}
           setFilter={setDashboardFilter} onRefresh={loadDashboard} sentiment={sentiment}
-          onTickerClick={(q) => { setFilingsSearchQuery(q); setActiveTab('filings'); loadFilings(); }}
+          onTickerClick={(q) => { setFilingsSearchQuery(q); setActiveTab('filings'); if (filings.length === 0) loadFilings(); }}
         />)}
 
         {activeTab === 'watchlist' && (<Watchlist
