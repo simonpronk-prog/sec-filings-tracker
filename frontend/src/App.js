@@ -477,6 +477,7 @@ function Filings({ filings, loading, error, dateFrom, dateTo, setDateFrom, setDa
                     )}
                   </div>
                   {has && <div style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '4px', borderLeft: `4px solid ${s.color}`, fontSize: '0.95rem', lineHeight: '1.5', color: '#333' }}>🤖 {f.ai_summary}</div>}
+                  {has && f.numbers_confidence === 'low' && <div style={{ padding: '0.5rem 0.75rem', background: '#fff3cd', borderRadius: '4px', borderLeft: '4px solid #ffc107', fontSize: '0.85rem', color: '#856404', marginTop: '0.5rem' }}>⚠️ Numbers in this analysis may be approximate — the filing text was unclear or truncated</div>}
                   {!has && <div style={{ padding: '0.75rem', background: '#fff9e6', borderRadius: '4px', borderLeft: '4px solid #ffc107', fontSize: '0.9rem', color: '#856404' }}>⏳ AI analysis pending — will be processed on next check</div>}
                   <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     <a href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${f.cik}&type=${f.formType}&dateb=&owner=exclude&count=40`}

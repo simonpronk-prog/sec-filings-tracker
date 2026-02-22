@@ -36,7 +36,8 @@ async function runMigration() {
     await pool.query(`ALTER TABLE filings ADD COLUMN IF NOT EXISTS short_interest_percent DECIMAL(5,2)`);
     await pool.query(`ALTER TABLE filings ADD COLUMN IF NOT EXISTS short_interest_updated_at TIMESTAMP`);
     await pool.query(`ALTER TABLE filings ADD COLUMN IF NOT EXISTS analysis_generated_at TIMESTAMP`);
-    
+    await pool.query(`ALTER TABLE filings ADD COLUMN IF NOT EXISTS numbers_confidence VARCHAR(10)`);
+
     console.log('✅ Added all AI analysis columns');
 
     // Verify
