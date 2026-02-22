@@ -191,7 +191,7 @@ For "numbers_confidence":
           'Authorization': `Bearer ${this.grokKey}`
         },
         body: JSON.stringify({
-          model: 'grok-2-1212',
+          model: 'grok-3',
           messages: [{
             role: 'user',
             content: prompt
