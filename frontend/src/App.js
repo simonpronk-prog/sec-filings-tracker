@@ -79,7 +79,7 @@ function App() {
     if (tickerFilingsLoading[cik]) return;
     setTickerFilingsLoading(prev => ({ ...prev, [cik]: true }));
     try {
-      const r = await apiFetch(`/api/sec/filings/${cik}?daysBack=30`);
+      const r = await apiFetch(`/api/sec/filings/${cik}?daysBack=90`);
       if (r.ok) {
         const data = await r.json();
         setTickerFilings(prev => ({ ...prev, [cik]: data }));
@@ -333,7 +333,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                     )}
                     {!isLoadingFilings && visibleFilings.length === 0 && (
                       <div style={{ textAlign: 'center', padding: '1.5rem', color: '#999', fontSize: '0.9rem' }}>
-                        {hideRead && filings.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.' : 'No filings in the last 30 days.'}
+                        {hideRead && filings.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.' : 'No filings in the last 90 days.'}
                       </div>
                     )}
                     {!isLoadingFilings && visibleFilings.map(f => {

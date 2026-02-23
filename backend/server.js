@@ -883,17 +883,27 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Auto-populate user_filings for any shared filings the user doesn't have links to yet
-    // This ensures unread counts are correct even before a user expands each ticker
+    // Auto-populate user_filings for shared filings from the last 90 days
+    // Only recent filings — avoids counting ancient filings as "new"
     await pool.query(`
       INSERT INTO user_filings (user_id, filing_id, read)
       SELECT $1, f.id, false
       FROM filings f
       JOIN watchlist w ON f.cik = w.cik AND w.user_id = $1
-      WHERE NOT EXISTS (
-        SELECT 1 FROM user_filings uf WHERE uf.user_id = $1 AND uf.filing_id = f.id
-      )
+      WHERE f.filed_date >= CURRENT_DATE - INTERVAL '90 days'
+        AND NOT EXISTS (
+          SELECT 1 FROM user_filings uf WHERE uf.user_id = $1 AND uf.filing_id = f.id
+        )
       ON CONFLICT (user_id, filing_id) DO NOTHING
+    `, [userId]);
+
+    // Auto-mark old filings (>90 days) as read so they don't show as "new"
+    await pool.query(`
+      UPDATE user_filings SET read = true
+      WHERE user_id = $1 AND read = false
+        AND filing_id IN (
+          SELECT f.id FROM filings f WHERE f.filed_date < CURRENT_DATE - INTERVAL '90 days'
+        )
     `, [userId]);
 
     // Get watchlist with filing stats per ticker (using shared filings + user_filings)
@@ -903,7 +913,7 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         w.name,
         w.cik,
         COUNT(f.id) AS total_filings,
-        COUNT(CASE WHEN uf.read = false THEN 1 END) AS unread_count,
+        COUNT(CASE WHEN uf.read = false AND f.filed_date >= CURRENT_DATE - INTERVAL '90 days' THEN 1 END) AS unread_count,
         COUNT(CASE WHEN f.ai_summary IS NOT NULL THEN 1 END) AS analyzed_count,
         MAX(f.filed_date) AS latest_filing_date,
         (SELECT f2.sentiment_direction FROM filings f2
