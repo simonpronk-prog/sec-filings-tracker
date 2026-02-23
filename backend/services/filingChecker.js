@@ -151,15 +151,16 @@ class FilingCheckerService {
     );
   }
 
-  // Store filing in database
+  // Store filing in database (shared filing + per-user link)
   async storeFilingInDatabase(userId, filing) {
     try {
-      await this.pool.query(
-        `INSERT INTO filings (user_id, cik, company, form_type, filed_date, description, accession_number, primary_document, report_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         ON CONFLICT (user_id, accession_number) DO NOTHING`,
+      // Step 1: Insert shared filing (if it doesn't exist)
+      const result = await this.pool.query(
+        `INSERT INTO filings (cik, company, form_type, filed_date, description, accession_number, primary_document, report_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (accession_number) DO NOTHING
+         RETURNING id`,
         [
-          userId,
           filing.cik,
           filing.company,
           filing.formType,
@@ -169,6 +170,26 @@ class FilingCheckerService {
           filing.primaryDocument,
           filing.reportDate
         ]
+      );
+
+      // Get the filing id (either just inserted, or already existing)
+      let filingId;
+      if (result.rows.length > 0) {
+        filingId = result.rows[0].id;
+      } else {
+        const existing = await this.pool.query(
+          'SELECT id FROM filings WHERE accession_number = $1',
+          [filing.accessionNumber]
+        );
+        filingId = existing.rows[0].id;
+      }
+
+      // Step 2: Link to user
+      await this.pool.query(
+        `INSERT INTO user_filings (user_id, filing_id, read)
+         VALUES ($1, $2, false)
+         ON CONFLICT (user_id, filing_id) DO NOTHING`,
+        [userId, filingId]
       );
     } catch (error) {
       console.error('Error storing filing:', error);
@@ -234,10 +255,11 @@ class FilingCheckerService {
         try {
           // Get today's filings for this user
           const filingsResult = await this.pool.query(
-            `SELECT * FROM filings 
-             WHERE user_id = $1 
-             AND filed_date >= CURRENT_DATE
-             ORDER BY filed_date DESC`,
+            `SELECT f.*, uf.read FROM filings f
+             JOIN user_filings uf ON uf.filing_id = f.id
+             WHERE uf.user_id = $1
+             AND f.filed_date >= CURRENT_DATE
+             ORDER BY f.filed_date DESC`,
             [user.id]
           );
 
@@ -267,10 +289,11 @@ class FilingCheckerService {
         try {
           // Get this week's filings for this user
           const filingsResult = await this.pool.query(
-            `SELECT * FROM filings 
-             WHERE user_id = $1 
-             AND filed_date >= CURRENT_DATE - INTERVAL '7 days'
-             ORDER BY filed_date DESC`,
+            `SELECT f.*, uf.read FROM filings f
+             JOIN user_filings uf ON uf.filing_id = f.id
+             WHERE uf.user_id = $1
+             AND f.filed_date >= CURRENT_DATE - INTERVAL '7 days'
+             ORDER BY f.filed_date DESC`,
             [user.id]
           );
 

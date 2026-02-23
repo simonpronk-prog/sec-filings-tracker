@@ -398,12 +398,46 @@ app.get('/api/sec/search', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper: insert/get a shared filing and link to user
+async function ensureFilingAndLink(userId, filing) {
+  // Insert shared filing if it doesn't exist
+  const insertResult = await pool.query(
+    `INSERT INTO filings (cik, company, form_type, filed_date, description, accession_number, primary_document, report_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (accession_number) DO NOTHING
+     RETURNING id`,
+    [filing.cik, filing.company || filing.companyName, filing.formType, filing.filedDate,
+     filing.description, filing.accessionNumber, filing.primaryDocument, filing.reportDate]
+  );
+
+  let filingId;
+  if (insertResult.rows.length > 0) {
+    filingId = insertResult.rows[0].id;
+  } else {
+    const existing = await pool.query(
+      'SELECT id FROM filings WHERE accession_number = $1',
+      [filing.accessionNumber]
+    );
+    filingId = existing.rows[0].id;
+  }
+
+  // Link to user
+  await pool.query(
+    `INSERT INTO user_filings (user_id, filing_id, read)
+     VALUES ($1, $2, false)
+     ON CONFLICT (user_id, filing_id) DO NOTHING`,
+    [userId, filingId]
+  );
+
+  return filingId;
+}
+
 // Get filings for watchlist
 app.get('/api/sec/filings', authenticateToken, async (req, res) => {
   try {
     const daysBack = parseInt(req.query.daysBack) || 7;
     console.log('📋 Fetching filings for user:', req.user.id, 'looking back', daysBack, 'days');
-    
+
     // Get user's AI preferences
     const userPrefs = await pool.query(
       'SELECT ai_preferences FROM users WHERE id = $1',
@@ -411,7 +445,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
     console.log('🎯 User AI preferences:', aiPreferences);
-    
+
     const watchlist = await pool.query(
       'SELECT cik, name, ticker FROM watchlist WHERE user_id = $1',
       [req.user.id]
@@ -432,25 +466,38 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
 
     // Process each filing
     const enrichedFilings = [];
-    
+
     for (const filing of filings) {
       try {
-        // Check if filing already exists with analysis
-        const existing = await pool.query(
-          `SELECT * FROM filings WHERE user_id = $1 AND accession_number = $2`,
-          [req.user.id, filing.accessionNumber]
-        );
-
-        // Get ticker for this company (must be before any early-continue paths)
+        // Get ticker for this company
         const companyInfo = watchlist.rows.find(w => w.cik === filing.cik);
         const ticker = companyInfo?.ticker;
 
+        // Check if shared filing already exists with analysis
+        const existing = await pool.query(
+          `SELECT f.*, uf.read
+           FROM filings f
+           LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
+           WHERE f.accession_number = $2`,
+          [req.user.id, filing.accessionNumber]
+        );
+
         let filingData = { ...filing, ticker };
-        
+
         if (existing.rows.length > 0) {
-          // Use existing analysis if available
           const existingFiling = existing.rows[0];
+
+          // Ensure user_filings link exists
+          await pool.query(
+            `INSERT INTO user_filings (user_id, filing_id, read)
+             VALUES ($1, $2, false)
+             ON CONFLICT (user_id, filing_id) DO NOTHING`,
+            [req.user.id, existingFiling.id]
+          );
+
           if (existingFiling.ai_summary) {
+            // Shared analysis exists — reuse it (no re-fetch, no re-analysis!)
+            console.log(`♻️ Reusing existing analysis for ${filing.accessionNumber}`);
             filingData = {
               ...filing,
               ticker,
@@ -466,6 +513,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               ai_consensus: existingFiling.ai_consensus,
               short_interest_percent: existingFiling.short_interest_percent,
               numbers_confidence: existingFiling.numbers_confidence,
+              read: existingFiling.read || false,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
             enrichedFilings.push(filingData);
@@ -477,9 +525,9 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
         const priority = aiAnalysis.getFilingPriority(filing.formType);
         filingData.priority = priority;
 
-        // Analyze ALL filings with AI
+        // No analysis exists — run AI analysis
         console.log(`🤖 Analyzing ${filing.formType} for ${filing.company}...`);
-        
+
         try {
           const filingText = await secEdgar.parseFilingContent(
             filing.accessionNumber,
@@ -487,7 +535,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
             filing.primaryDocument
           );
 
-          // Get AI analysis (runs selected AIs based on user preferences)
+          // Get AI analysis
           const analysis = await aiAnalysis.analyzeFiling(
             filingText,
             filing.company,
@@ -508,19 +556,20 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               ai_summary: analysis.brief_summary,
               short_interest_percent: shortData?.short_volume_percent || null,
               short_interest_updated_at: shortData?.updated_at || null,
+              read: false,
               priority
             };
 
-            // Save to database
-            await pool.query(
+            // Save to shared filings table
+            const insertResult = await pool.query(
               `INSERT INTO filings (
-                user_id, cik, form_type, filed_date, description, accession_number,
+                cik, form_type, filed_date, description, accession_number,
                 company, primary_document, report_date, ai_summary, ai_detailed_summary,
                 sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
                 confidence_score, bullish_factors, bearish_factors, ai_consensus,
                 short_interest_percent, short_interest_updated_at, numbers_confidence, analysis_generated_at
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW())
-              ON CONFLICT (user_id, accession_number)
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
+              ON CONFLICT (accession_number)
               DO UPDATE SET
                 ai_summary = EXCLUDED.ai_summary,
                 ai_detailed_summary = EXCLUDED.ai_detailed_summary,
@@ -535,9 +584,10 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 short_interest_percent = EXCLUDED.short_interest_percent,
                 short_interest_updated_at = EXCLUDED.short_interest_updated_at,
                 numbers_confidence = EXCLUDED.numbers_confidence,
-                analysis_generated_at = EXCLUDED.analysis_generated_at`,
+                analysis_generated_at = NOW()
+              RETURNING id`,
               [
-                req.user.id, filing.cik, filing.formType, filing.filedDate,
+                filing.cik, filing.formType, filing.filedDate,
                 filing.description, filing.accessionNumber, filing.company,
                 filing.primaryDocument, filing.reportDate,
                 analysis.brief_summary, analysis.detailed_summary,
@@ -550,34 +600,27 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 analysis.numbers_confidence || 'low'
               ]
             );
-          } else {
-            // Analysis returned null (e.g. AI keys not configured) - save without analysis
+
+            // Link to user
+            const filingId = insertResult.rows[0].id;
             await pool.query(
-              `INSERT INTO filings (user_id, cik, form_type, filed_date, description, accession_number, company, primary_document, report_date)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-               ON CONFLICT (user_id, accession_number) DO NOTHING`,
-              [req.user.id, filing.cik, filing.formType, filing.filedDate,
-               filing.description, filing.accessionNumber, filing.company,
-               filing.primaryDocument, filing.reportDate]
+              `INSERT INTO user_filings (user_id, filing_id, read)
+               VALUES ($1, $2, false)
+               ON CONFLICT (user_id, filing_id) DO NOTHING`,
+              [req.user.id, filingId]
             );
+          } else {
+            // Analysis returned null — save filing without analysis
+            await ensureFilingAndLink(req.user.id, filing);
           }
         } catch (analysisError) {
           console.error('⚠️ Analysis error for filing:', filing.accessionNumber, analysisError.message);
-          // Save without analysis so filing still appears in UI
-          await pool.query(
-            `INSERT INTO filings (user_id, cik, form_type, filed_date, description, accession_number, company, primary_document, report_date)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (user_id, accession_number) DO NOTHING`,
-            [req.user.id, filing.cik, filing.formType, filing.filedDate,
-             filing.description, filing.accessionNumber, filing.company,
-             filing.primaryDocument, filing.reportDate]
-          );
+          await ensureFilingAndLink(req.user.id, filing);
         }
 
         enrichedFilings.push(filingData);
       } catch (filingError) {
         console.error('⚠️ Error processing filing:', filing.accessionNumber, filingError.message);
-        // Add filing without analysis
         enrichedFilings.push({
           ...filing,
           priority: aiAnalysis.getFilingPriority(filing.formType)
@@ -597,7 +640,9 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
 app.post('/api/filings/:accessionNumber/read', authenticateToken, async (req, res) => {
   try {
     await pool.query(
-      'UPDATE filings SET read = true WHERE user_id = $1 AND accession_number = $2',
+      `INSERT INTO user_filings (user_id, filing_id, read)
+       VALUES ($1, (SELECT id FROM filings WHERE accession_number = $2), true)
+       ON CONFLICT (user_id, filing_id) DO UPDATE SET read = true`,
       [req.user.id, req.params.accessionNumber]
     );
     res.json({ message: 'Filing marked as read' });
@@ -607,16 +652,16 @@ app.post('/api/filings/:accessionNumber/read', authenticateToken, async (req, re
   }
 });
 
-// Regenerate AI analysis for a filing
+// Regenerate AI analysis for a filing (updates shared analysis — benefits all users)
 app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req, res) => {
   try {
     const { accessionNumber } = req.params;
-    
-    // Get filing from database
+
+    // Get shared filing + ticker from user's watchlist
     const result = await pool.query(
       `SELECT f.*, w.ticker FROM filings f
-       JOIN watchlist w ON f.cik = w.cik AND f.user_id = w.user_id
-       WHERE f.user_id = $1 AND f.accession_number = $2`,
+       JOIN watchlist w ON f.cik = w.cik AND w.user_id = $1
+       WHERE f.accession_number = $2`,
       [req.user.id, accessionNumber]
     );
 
@@ -625,7 +670,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     }
 
     const filing = result.rows[0];
-    
+
     console.log(`🔄 Regenerating analysis for ${filing.form_type} - ${filing.company}...`);
 
     // Get user's AI preferences
@@ -635,14 +680,14 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
 
-    // Fetch filing text using VERSION 2.0 parser
+    // Fetch filing text
     const filingText = await secEdgar.parseFilingContent(
       filing.accession_number,
       filing.cik,
       filing.primary_document
     );
 
-    // Get fresh AI analysis with user preferences
+    // Get fresh AI analysis
     const analysis = await aiAnalysis.analyzeFiling(
       filingText,
       filing.company,
@@ -658,7 +703,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     // Get fresh short interest data
     const shortData = await shortInterest.getShortInterest(filing.ticker);
 
-    // Update database
+    // Update shared filings table (benefits all users)
     await pool.query(
       `UPDATE filings SET
         ai_summary = $1,
@@ -674,7 +719,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
         short_interest_percent = $11,
         short_interest_updated_at = $12,
         analysis_generated_at = NOW()
-       WHERE user_id = $13 AND accession_number = $14`,
+       WHERE accession_number = $13`,
       [
         analysis.brief_summary,
         analysis.detailed_summary,
@@ -688,7 +733,6 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
         JSON.stringify(analysis.ai_consensus),
         shortData?.short_volume_percent || null,
         shortData?.updated_at || null,
-        req.user.id,
         accessionNumber
       ]
     );
@@ -770,34 +814,39 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get watchlist with filing stats per ticker
+    // Get watchlist with filing stats per ticker (using shared filings + user_filings)
     const tickerStats = await pool.query(`
-      SELECT 
+      SELECT
         w.ticker,
         w.name,
         w.cik,
         COUNT(f.id) AS total_filings,
-        COUNT(CASE WHEN f.read = false THEN 1 END) AS unread_count,
+        COUNT(CASE WHEN uf.read = false THEN 1 END) AS unread_count,
         COUNT(CASE WHEN f.ai_summary IS NOT NULL THEN 1 END) AS analyzed_count,
         MAX(f.filed_date) AS latest_filing_date,
-        -- Get the most recent analyzed filing's sentiment
-        (SELECT f2.sentiment_direction FROM filings f2 
-         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+        (SELECT f2.sentiment_direction FROM filings f2
+         JOIN user_filings uf2 ON uf2.filing_id = f2.id AND uf2.user_id = $1
+         WHERE f2.cik = w.cik AND f2.ai_summary IS NOT NULL
          ORDER BY f2.filed_date DESC LIMIT 1) AS latest_sentiment,
-        (SELECT f2.expected_move_avg FROM filings f2 
-         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+        (SELECT f2.expected_move_avg FROM filings f2
+         JOIN user_filings uf2 ON uf2.filing_id = f2.id AND uf2.user_id = $1
+         WHERE f2.cik = w.cik AND f2.ai_summary IS NOT NULL
          ORDER BY f2.filed_date DESC LIMIT 1) AS latest_move_avg,
-        (SELECT f2.confidence_score FROM filings f2 
-         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+        (SELECT f2.confidence_score FROM filings f2
+         JOIN user_filings uf2 ON uf2.filing_id = f2.id AND uf2.user_id = $1
+         WHERE f2.cik = w.cik AND f2.ai_summary IS NOT NULL
          ORDER BY f2.filed_date DESC LIMIT 1) AS latest_confidence,
-        (SELECT f2.form_type FROM filings f2 
-         WHERE f2.cik = w.cik AND f2.user_id = $1
+        (SELECT f2.form_type FROM filings f2
+         JOIN user_filings uf2 ON uf2.filing_id = f2.id AND uf2.user_id = $1
+         WHERE f2.cik = w.cik
          ORDER BY f2.filed_date DESC LIMIT 1) AS latest_form_type,
-        (SELECT f2.ai_summary FROM filings f2 
-         WHERE f2.cik = w.cik AND f2.user_id = $1 AND f2.ai_summary IS NOT NULL
+        (SELECT f2.ai_summary FROM filings f2
+         JOIN user_filings uf2 ON uf2.filing_id = f2.id AND uf2.user_id = $1
+         WHERE f2.cik = w.cik AND f2.ai_summary IS NOT NULL
          ORDER BY f2.filed_date DESC LIMIT 1) AS latest_summary
       FROM watchlist w
-      LEFT JOIN filings f ON f.cik = w.cik AND f.user_id = w.user_id
+      LEFT JOIN filings f ON f.cik = w.cik
+      LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = w.user_id
       WHERE w.user_id = $1
       GROUP BY w.ticker, w.name, w.cik
       ORDER BY MAX(f.filed_date) DESC NULLS LAST
@@ -805,21 +854,22 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
 
     // Get recent high-priority filings (needle movers)
     const needleMovers = await pool.query(`
-      SELECT 
+      SELECT
         f.accession_number,
         f.company,
+        f.cik,
         f.form_type,
         f.filed_date,
         f.ai_summary,
         f.sentiment_direction,
         f.expected_move_avg,
         f.confidence_score,
-        f.read,
+        uf.read,
         w.ticker
       FROM filings f
-      JOIN watchlist w ON f.cik = w.cik AND f.user_id = w.user_id
-      WHERE f.user_id = $1
-        AND f.ai_summary IS NOT NULL
+      JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
+      JOIN watchlist w ON f.cik = w.cik AND w.user_id = $1
+      WHERE f.ai_summary IS NOT NULL
         AND f.form_type IN ('10-K', '10-Q', '8-K', '6-K', '20-F', '13F-HR', 'SC 13D', 'SC 13G', 'DEF 14A', '4', 'S-1')
       ORDER BY f.filed_date DESC
       LIMIT 20
@@ -845,6 +895,162 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Dashboard error:', error);
     res.status(500).json({ error: 'Error fetching dashboard data' });
+  }
+});
+
+// ============================================
+// SINGLE-CIK FILINGS (for expandable watchlist)
+// ============================================
+app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
+  try {
+    const { cik } = req.params;
+    const daysBack = parseInt(req.query.daysBack) || 30;
+
+    // Verify user watches this CIK
+    const watchCheck = await pool.query(
+      'SELECT ticker, name FROM watchlist WHERE user_id = $1 AND cik = $2',
+      [req.user.id, cik]
+    );
+    if (watchCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not in your watchlist' });
+    }
+    const ticker = watchCheck.rows[0].ticker;
+
+    // Get user's AI preferences
+    const userPrefs = await pool.query(
+      'SELECT ai_preferences FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
+
+    // Fetch filings from SEC EDGAR for this single CIK
+    const filings = await secEdgar.getCompanyFilings(cik, daysBack);
+
+    const enrichedFilings = [];
+
+    for (const filing of filings) {
+      try {
+        // Check shared filings table
+        const existing = await pool.query(
+          `SELECT f.*, uf.read
+           FROM filings f
+           LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
+           WHERE f.accession_number = $2`,
+          [req.user.id, filing.accessionNumber]
+        );
+
+        let filingData = { ...filing, ticker };
+
+        if (existing.rows.length > 0) {
+          const existingFiling = existing.rows[0];
+
+          // Ensure user link exists
+          await pool.query(
+            `INSERT INTO user_filings (user_id, filing_id, read)
+             VALUES ($1, $2, false)
+             ON CONFLICT (user_id, filing_id) DO NOTHING`,
+            [req.user.id, existingFiling.id]
+          );
+
+          if (existingFiling.ai_summary) {
+            filingData = {
+              ...filing,
+              ticker,
+              ai_summary: existingFiling.ai_summary,
+              ai_detailed_summary: existingFiling.ai_detailed_summary,
+              sentiment_direction: existingFiling.sentiment_direction,
+              expected_move_min: existingFiling.expected_move_min,
+              expected_move_max: existingFiling.expected_move_max,
+              expected_move_avg: existingFiling.expected_move_avg,
+              confidence_score: existingFiling.confidence_score,
+              bullish_factors: existingFiling.bullish_factors,
+              bearish_factors: existingFiling.bearish_factors,
+              ai_consensus: existingFiling.ai_consensus,
+              short_interest_percent: existingFiling.short_interest_percent,
+              numbers_confidence: existingFiling.numbers_confidence,
+              read: existingFiling.read || false,
+              priority: aiAnalysis.getFilingPriority(filing.formType)
+            };
+            enrichedFilings.push(filingData);
+            continue;
+          }
+        }
+
+        // No analysis — run AI
+        const priority = aiAnalysis.getFilingPriority(filing.formType);
+        filingData.priority = priority;
+
+        try {
+          const filingText = await secEdgar.parseFilingContent(
+            filing.accessionNumber, filing.cik, filing.primaryDocument
+          );
+
+          const analysis = await aiAnalysis.analyzeFiling(
+            filingText, filing.company, filing.formType, ticker, aiPreferences
+          );
+
+          if (analysis) {
+            const shortData = await shortInterest.getShortInterest(ticker);
+
+            filingData = {
+              ...filing, ticker, ...analysis,
+              ai_summary: analysis.brief_summary,
+              short_interest_percent: shortData?.short_volume_percent || null,
+              read: false, priority
+            };
+
+            const insertResult = await pool.query(
+              `INSERT INTO filings (
+                cik, form_type, filed_date, description, accession_number,
+                company, primary_document, report_date, ai_summary, ai_detailed_summary,
+                sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
+                confidence_score, bullish_factors, bearish_factors, ai_consensus,
+                short_interest_percent, short_interest_updated_at, numbers_confidence, analysis_generated_at
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
+              ON CONFLICT (accession_number) DO UPDATE SET
+                ai_summary = EXCLUDED.ai_summary, ai_detailed_summary = EXCLUDED.ai_detailed_summary,
+                sentiment_direction = EXCLUDED.sentiment_direction,
+                expected_move_min = EXCLUDED.expected_move_min, expected_move_max = EXCLUDED.expected_move_max,
+                expected_move_avg = EXCLUDED.expected_move_avg, confidence_score = EXCLUDED.confidence_score,
+                bullish_factors = EXCLUDED.bullish_factors, bearish_factors = EXCLUDED.bearish_factors,
+                ai_consensus = EXCLUDED.ai_consensus, short_interest_percent = EXCLUDED.short_interest_percent,
+                short_interest_updated_at = EXCLUDED.short_interest_updated_at,
+                numbers_confidence = EXCLUDED.numbers_confidence, analysis_generated_at = NOW()
+              RETURNING id`,
+              [filing.cik, filing.formType, filing.filedDate, filing.description,
+               filing.accessionNumber, filing.company, filing.primaryDocument, filing.reportDate,
+               analysis.brief_summary, analysis.detailed_summary, analysis.sentiment_direction,
+               analysis.expected_move_min, analysis.expected_move_max, analysis.expected_move_avg,
+               analysis.confidence_score, analysis.bullish_factors, analysis.bearish_factors,
+               JSON.stringify(analysis.ai_consensus), shortData?.short_volume_percent || null,
+               shortData?.updated_at || null, analysis.numbers_confidence || 'low']
+            );
+
+            await pool.query(
+              `INSERT INTO user_filings (user_id, filing_id, read)
+               VALUES ($1, $2, false)
+               ON CONFLICT (user_id, filing_id) DO NOTHING`,
+              [req.user.id, insertResult.rows[0].id]
+            );
+          } else {
+            await ensureFilingAndLink(req.user.id, filing);
+          }
+        } catch (analysisError) {
+          console.error('⚠️ Analysis error:', analysisError.message);
+          await ensureFilingAndLink(req.user.id, filing);
+        }
+
+        enrichedFilings.push(filingData);
+      } catch (filingError) {
+        console.error('⚠️ Error processing filing:', filingError.message);
+        enrichedFilings.push({ ...filing, ticker, priority: aiAnalysis.getFilingPriority(filing.formType) });
+      }
+    }
+
+    res.json(enrichedFilings);
+  } catch (error) {
+    console.error('❌ Get CIK filings error:', error);
+    res.status(500).json({ error: 'Error fetching filings', details: error.message });
   }
 });
 
@@ -900,18 +1106,17 @@ async function initDatabase() {
         UNIQUE(user_id, cik)
       );
 
+      -- Shared filings table: one row per SEC filing (no user_id)
       CREATE TABLE IF NOT EXISTS filings (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
         cik VARCHAR(50) NOT NULL,
         company VARCHAR(255),
         form_type VARCHAR(20),
         filed_date DATE,
         description TEXT,
-        accession_number VARCHAR(100),
+        accession_number VARCHAR(100) UNIQUE NOT NULL,
         primary_document VARCHAR(255),
         report_date DATE,
-        read BOOLEAN DEFAULT false,
         ai_summary TEXT,
         ai_detailed_summary TEXT,
         sentiment_direction VARCHAR(20),
@@ -926,8 +1131,17 @@ async function initDatabase() {
         short_interest_updated_at TIMESTAMP,
         numbers_confidence VARCHAR(10),
         analysis_generated_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Per-user filing state (read/unread)
+      CREATE TABLE IF NOT EXISTS user_filings (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        filing_id INTEGER REFERENCES filings(id) ON DELETE CASCADE,
+        read BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, accession_number)
+        UNIQUE(user_id, filing_id)
       );
 
       CREATE TABLE IF NOT EXISTS user_preferences (
@@ -945,9 +1159,12 @@ async function initDatabase() {
       );
 
       CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
-      CREATE INDEX IF NOT EXISTS idx_filings_user ON filings(user_id);
+      CREATE INDEX IF NOT EXISTS idx_filings_accession ON filings(accession_number);
+      CREATE INDEX IF NOT EXISTS idx_filings_cik ON filings(cik);
       CREATE INDEX IF NOT EXISTS idx_filings_date ON filings(filed_date DESC);
-      CREATE INDEX IF NOT EXISTS idx_filings_unread ON filings(user_id, read) WHERE read = false;
+      CREATE INDEX IF NOT EXISTS idx_user_filings_user ON user_filings(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_filings_unread ON user_filings(user_id, read) WHERE read = false;
+      CREATE INDEX IF NOT EXISTS idx_user_filings_filing ON user_filings(filing_id);
     `);
     console.log('✅ Database initialized successfully');
   } catch (error) {
