@@ -808,11 +808,93 @@ app.get('/api/admin/status', authenticateToken, async (req, res) => {
 });
 
 // ============================================
+// STOCK PRICES (Yahoo Finance, cached 5 min)
+// ============================================
+const stockPriceCache = {}; // { TICKER: { price, change, changePercent, cachedAt } }
+const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function fetchStockPrice(ticker) {
+  const now = Date.now();
+  const cached = stockPriceCache[ticker];
+  if (cached && (now - cached.cachedAt) < PRICE_CACHE_TTL) {
+    return cached;
+  }
+
+  try {
+    const fetch = require('node-fetch');
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 5000
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta) return null;
+
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.chartPreviousClose || meta.previousClose;
+    const change = price - prevClose;
+    const changePercent = prevClose ? ((change / prevClose) * 100) : 0;
+
+    const result = {
+      price: parseFloat(price.toFixed(2)),
+      change: parseFloat(change.toFixed(2)),
+      changePercent: parseFloat(changePercent.toFixed(2)),
+      cachedAt: now
+    };
+    stockPriceCache[ticker] = result;
+    return result;
+  } catch (err) {
+    console.error(`Stock price fetch failed for ${ticker}:`, err.message);
+    return cached || null; // return stale cache if available
+  }
+}
+
+app.get('/api/stock-prices', authenticateToken, async (req, res) => {
+  try {
+    const watchlist = await pool.query(
+      'SELECT DISTINCT ticker FROM watchlist WHERE user_id = $1 AND ticker IS NOT NULL',
+      [req.user.id]
+    );
+
+    const tickers = watchlist.rows.map(r => r.ticker).filter(Boolean);
+    const prices = {};
+
+    // Fetch all in parallel (max 20 to be safe)
+    const results = await Promise.allSettled(
+      tickers.slice(0, 20).map(async (ticker) => {
+        const data = await fetchStockPrice(ticker);
+        if (data) prices[ticker] = { price: data.price, change: data.change, changePercent: data.changePercent };
+      })
+    );
+
+    res.json(prices);
+  } catch (error) {
+    console.error('Stock prices error:', error);
+    res.status(500).json({ error: 'Error fetching stock prices' });
+  }
+});
+
+// ============================================
 // DASHBOARD ROUTE
 // ============================================
 app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+
+    // Auto-populate user_filings for any shared filings the user doesn't have links to yet
+    // This ensures unread counts are correct even before a user expands each ticker
+    await pool.query(`
+      INSERT INTO user_filings (user_id, filing_id, read)
+      SELECT $1, f.id, false
+      FROM filings f
+      JOIN watchlist w ON f.cik = w.cik AND w.user_id = $1
+      WHERE NOT EXISTS (
+        SELECT 1 FROM user_filings uf WHERE uf.user_id = $1 AND uf.filing_id = f.id
+      )
+      ON CONFLICT (user_id, filing_id) DO NOTHING
+    `, [userId]);
 
     // Get watchlist with filing stats per ticker (using shared filings + user_filings)
     const tickerStats = await pool.query(`

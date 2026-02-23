@@ -47,6 +47,10 @@ function App() {
   const [tickerFilingsLoading, setTickerFilingsLoading] = useState({});
   const [hideRead, setHideRead] = useState(false);
   const [expandedFiling, setExpandedFiling] = useState(null);
+  // Stock prices
+  const [stockPrices, setStockPrices] = useState({});
+  // Unread filter (when clicking the Unread tile)
+  const [unreadFilter, setUnreadFilter] = useState(false);
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -64,6 +68,10 @@ function App() {
     setDashboardLoading(true);
     try { const r = await apiFetch('/api/dashboard'); if (r.ok) setDashboard(await r.json()); } catch (e) {}
     finally { setDashboardLoading(false); }
+  };
+
+  const loadStockPrices = async () => {
+    try { const r = await apiFetch('/api/stock-prices'); if (r.ok) setStockPrices(await r.json()); } catch (e) {}
   };
 
   // Load filings for a single CIK when expanding
@@ -126,7 +134,7 @@ function App() {
     }
   };
 
-  useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); } }, [isAuthenticated]);
+  useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); loadStockPrices(); } }, [isAuthenticated]);
   useEffect(() => { if (isAuthenticated && activeTab === 'dashboard' && !dashboard) loadDashboard(); }, [activeTab]);
 
   useEffect(() => {
@@ -203,11 +211,13 @@ function App() {
         {activeTab === 'dashboard' && (
           <Dashboard
             dashboard={dashboard} loading={dashboardLoading} sentiment={sentiment}
-            onRefresh={() => { loadDashboard(); setTickerFilings({}); }}
+            onRefresh={() => { loadDashboard(); loadStockPrices(); setTickerFilings({}); }}
             expandedTicker={expandedTicker} toggleTicker={toggleTicker}
             tickerFilings={tickerFilings} tickerFilingsLoading={tickerFilingsLoading}
             hideRead={hideRead} setHideRead={setHideRead}
             markAsRead={markAsRead} expandedFiling={expandedFiling} setExpandedFiling={setExpandedFiling}
+            stockPrices={stockPrices}
+            unreadFilter={unreadFilter} setUnreadFilter={setUnreadFilter}
           />
         )}
 
@@ -227,21 +237,24 @@ function App() {
 // ============================================
 // DASHBOARD COMPONENT — Expandable Watchlist
 // ============================================
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, expandedFiling, setExpandedFiling }) {
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter }) {
   return (
     <div>
       {/* Summary cards */}
       {dashboard && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
           {[
-            { label: 'Unread', val: dashboard.summary.totalUnread, col: dashboard.summary.totalUnread > 0 ? '#667eea' : '#333' },
+            { label: 'Unread', val: dashboard.summary.totalUnread, col: dashboard.summary.totalUnread > 0 ? '#667eea' : '#333', clickable: true },
             { label: 'Watching', val: dashboard.summary.totalTickers, col: '#333' },
             { label: '⬆️ Bullish', val: dashboard.summary.bullish, col: '#28a745' },
             { label: '⬇️ Bearish', val: dashboard.summary.bearish, col: '#dc3545' }
           ].map((c, i) => (
-            <div key={i} style={{ background: 'white', padding: '1.25rem', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-              <div style={{ fontSize: '0.85rem', color: '#666' }}>{c.label}</div>
-              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: c.col }}>{c.val}</div>
+            <div key={i} onClick={c.clickable ? () => setUnreadFilter(!unreadFilter) : undefined}
+              style={{ background: c.clickable && unreadFilter ? '#667eea' : 'white', padding: '1.25rem', borderRadius: '8px',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)', cursor: c.clickable ? 'pointer' : 'default',
+                transition: 'all 0.2s', border: c.clickable && unreadFilter ? '2px solid #5a6fd6' : '2px solid transparent' }}>
+              <div style={{ fontSize: '0.85rem', color: c.clickable && unreadFilter ? 'rgba(255,255,255,0.8)' : '#666' }}>{c.label}</div>
+              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: c.clickable && unreadFilter ? 'white' : c.col }}>{c.val}</div>
             </div>
           ))}
         </div>
@@ -249,7 +262,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
 
       {/* Controls bar */}
       <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', flex: 1 }}>Your Watchlist</h2>
+        <h2 style={{ margin: 0, fontSize: '1.1rem', flex: 1 }}>{unreadFilter ? 'Unread Filings' : 'Your Watchlist'}</h2>
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem', color: '#666',
           background: hideRead ? '#667eea' : 'white', color: hideRead ? 'white' : '#666',
           padding: '0.5rem 1rem', borderRadius: '20px', border: `1px solid ${hideRead ? '#667eea' : '#ddd'}` }}>
@@ -269,13 +282,16 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
       {/* Expandable ticker cards */}
       {dashboard && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {dashboard.tickers.map(t => {
+          {dashboard.tickers
+            .filter(t => !unreadFilter || parseInt(t.unread_count || 0) > 0)
+            .map(t => {
             const s = sentiment(t.latest_sentiment);
             const isExpanded = expandedTicker === t.cik;
             const unread = parseInt(t.unread_count || 0);
             const filings = tickerFilings[t.cik] || [];
             const isLoadingFilings = tickerFilingsLoading[t.cik];
             const visibleFilings = hideRead ? filings.filter(f => !f.read) : filings;
+            const price = stockPrices[t.ticker];
 
             return (
               <div key={t.cik} style={{ background: 'white', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
@@ -287,6 +303,11 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>{t.ticker || t.name}</span>
+                      {price && (
+                        <span style={{ fontSize: '0.95rem', fontWeight: '600', color: price.change >= 0 ? '#28a745' : '#dc3545' }}>
+                          ${price.price.toFixed(2)} <span style={{ fontSize: '0.8rem' }}>{price.change >= 0 ? '▲' : '▼'} {price.change >= 0 ? '+' : ''}{price.changePercent.toFixed(2)}%</span>
+                        </span>
+                      )}
                       {unread > 0 && <span style={{ background: '#667eea', color: 'white', borderRadius: '12px', padding: '0.15rem 0.6rem', fontSize: '0.75rem', fontWeight: 'bold' }}>{unread} new</span>}
                       {t.latest_form_type && <span style={{ background: '#f0f0f0', color: '#555', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}>{t.latest_form_type} — {getFilingInfo(t.latest_form_type).desc.split('—')[0].trim()}</span>}
                     </div>
