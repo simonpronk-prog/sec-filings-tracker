@@ -688,6 +688,42 @@ app.post('/api/filings/bulk-read', authenticateToken, async (req, res) => {
   }
 });
 
+// Mark a single filing as unread
+app.post('/api/filings/:accessionNumber/unread', authenticateToken, async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE user_filings SET read = false
+       WHERE user_id = $1
+         AND filing_id = (SELECT id FROM filings WHERE accession_number = $2)`,
+      [req.user.id, req.params.accessionNumber]
+    );
+    res.json({ message: 'Filing marked as unread' });
+  } catch (error) {
+    console.error('Mark unread error:', error);
+    res.status(500).json({ error: 'Error marking filing as unread' });
+  }
+});
+
+// Bulk mark filings as unread
+app.post('/api/filings/bulk-unread', authenticateToken, async (req, res) => {
+  try {
+    const { accessionNumbers } = req.body;
+    if (!Array.isArray(accessionNumbers) || accessionNumbers.length === 0) {
+      return res.status(400).json({ error: 'accessionNumbers array required' });
+    }
+    await pool.query(
+      `UPDATE user_filings SET read = false
+       WHERE user_id = $1
+         AND filing_id IN (SELECT id FROM filings WHERE accession_number = ANY($2))`,
+      [req.user.id, accessionNumbers]
+    );
+    res.json({ message: `${accessionNumbers.length} filings marked as unread` });
+  } catch (error) {
+    console.error('Bulk unread error:', error);
+    res.status(500).json({ error: 'Error marking filings as unread' });
+  }
+});
+
 // Regenerate AI analysis for a filing (updates shared analysis — benefits all users)
 app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req, res) => {
   try {

@@ -126,6 +126,67 @@ function App() {
     }
   };
 
+  // Mark a filing as unread
+  const markAsUnread = async (accessionNumber, cik) => {
+    try {
+      await apiFetch(`/api/filings/${encodeURIComponent(accessionNumber)}/unread`, { method: 'POST' });
+      setTickerFilings(prev => ({
+        ...prev,
+        [cik]: (prev[cik] || []).map(f =>
+          f.accessionNumber === accessionNumber ? { ...f, read: false } : f
+        )
+      }));
+      if (dashboard) {
+        setDashboard(prev => ({
+          ...prev,
+          tickers: prev.tickers.map(t =>
+            t.cik === cik ? { ...t, unread_count: (parseInt(t.unread_count || 0) + 1).toString() } : t
+          ),
+          summary: { ...prev.summary, totalUnread: prev.summary.totalUnread + 1 }
+        }));
+      }
+    } catch (e) {
+      console.error('Error marking as unread:', e);
+    }
+  };
+
+  // Bulk mark filings as unread
+  const bulkMarkAsUnread = async (cik) => {
+    const selected = selectedFilings[cik];
+    if (!selected || selected.size === 0) return;
+    const accessionNumbers = [...selected];
+    // Only count ones that are currently read (to update unread count correctly)
+    const currentFilings = tickerFilings[cik] || [];
+    const readCount = accessionNumbers.filter(an => {
+      const f = currentFilings.find(fi => fi.accessionNumber === an);
+      return f && f.read;
+    }).length;
+    try {
+      await apiFetch('/api/filings/bulk-unread', {
+        method: 'POST',
+        body: JSON.stringify({ accessionNumbers })
+      });
+      setTickerFilings(prev => ({
+        ...prev,
+        [cik]: (prev[cik] || []).map(f =>
+          selected.has(f.accessionNumber) ? { ...f, read: false } : f
+        )
+      }));
+      if (dashboard && readCount > 0) {
+        setDashboard(prev => ({
+          ...prev,
+          tickers: prev.tickers.map(t =>
+            t.cik === cik ? { ...t, unread_count: (parseInt(t.unread_count || 0) + readCount).toString() } : t
+          ),
+          summary: { ...prev.summary, totalUnread: prev.summary.totalUnread + readCount }
+        }));
+      }
+      setSelectedFilings(prev => ({ ...prev, [cik]: new Set() }));
+    } catch (e) {
+      console.error('Bulk unread error:', e);
+    }
+  };
+
   // Bulk mark filings as read
   const bulkMarkAsRead = async (cik) => {
     const selected = selectedFilings[cik];
@@ -277,11 +338,12 @@ function App() {
             expandedTicker={expandedTicker} toggleTicker={toggleTicker}
             tickerFilings={tickerFilings} tickerFilingsLoading={tickerFilingsLoading}
             hideRead={hideRead} setHideRead={setHideRead}
-            markAsRead={markAsRead} expandedFiling={expandedFiling} setExpandedFiling={setExpandedFiling}
+            markAsRead={markAsRead} markAsUnread={markAsUnread}
+            expandedFiling={expandedFiling} setExpandedFiling={setExpandedFiling}
             stockPrices={stockPrices}
             unreadFilter={unreadFilter} setUnreadFilter={setUnreadFilter}
             selectedFilings={selectedFilings} toggleFilingSelection={toggleFilingSelection}
-            toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead}
+            toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead} bulkMarkAsUnread={bulkMarkAsUnread}
             typeFilter={typeFilter} setTypeFilter={setTypeFilter}
           />
         )}
@@ -305,7 +367,15 @@ function App() {
 const IMPORTANT_TYPES = new Set(['10-K', '10-Q', '8-K', '6-K', '20-F', 'S-1', 'SC 13D', 'DEF 14A', '13F-HR']);
 const INSIDER_TYPES = new Set(['4', '144']);
 
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, typeFilter, setTypeFilter }) {
+// "Big" insider trade = Form 4/144 where AI flagged high expected move or high confidence
+function isBigInsider(f) {
+  if (!INSIDER_TYPES.has(f.formType)) return false;
+  const move = Math.abs(parseFloat(f.expected_move_avg) || 0);
+  const conf = parseInt(f.confidence_score) || 0;
+  return move >= 2 || conf >= 75;
+}
+
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter }) {
   return (
     <div>
       {/* Summary cards */}
@@ -360,7 +430,8 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
             const isLoadingFilings = tickerFilingsLoading[t.cik];
             const typeFiltered = typeFilter === 'all' ? filings
               : typeFilter === 'important' ? filings.filter(f => IMPORTANT_TYPES.has(f.formType))
-              : typeFilter === 'insider' ? filings.filter(f => INSIDER_TYPES.has(f.formType))
+              : typeFilter === 'insider-big' ? filings.filter(f => isBigInsider(f))
+              : typeFilter === 'insider-routine' ? filings.filter(f => INSIDER_TYPES.has(f.formType) && !isBigInsider(f))
               : filings;
             const visibleFilings = hideRead ? typeFiltered.filter(f => !f.read) : typeFiltered;
             const selected = selectedFilings[t.cik] || new Set();
@@ -410,7 +481,8 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                         {[
                           { k: 'all', l: 'All' },
                           { k: 'important', l: '🔴 Important' },
-                          { k: 'insider', l: '👤 Insider' }
+                          { k: 'insider-big', l: '💰 Big Insider' },
+                          { k: 'insider-routine', l: '👤 Routine Insider' }
                         ].map(f => (
                           <button key={f.k} onClick={(e) => { e.stopPropagation(); setTypeFilter(f.k); }}
                             style={{ padding: '0.3rem 0.75rem', borderRadius: '16px', fontSize: '0.8rem', cursor: 'pointer',
@@ -430,13 +502,18 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                               Select all
                             </label>
                           )}
-                          {selectedCount > 0 && (
+                          {selectedCount > 0 && (<>
                             <button onClick={(e) => { e.stopPropagation(); bulkMarkAsRead(t.cik); }}
                               style={{ padding: '0.3rem 0.75rem', background: '#28a745', color: 'white', border: 'none',
                                 borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '500' }}>
                               ✓ Mark {selectedCount} read
                             </button>
-                          )}
+                            <button onClick={(e) => { e.stopPropagation(); bulkMarkAsUnread(t.cik); }}
+                              style={{ padding: '0.3rem 0.75rem', background: '#667eea', color: 'white', border: 'none',
+                                borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '500' }}>
+                              Mark {selectedCount} unread
+                            </button>
+                          </>)}
                         </div>
                       </div>
                     )}
@@ -447,7 +524,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                     {!isLoadingFilings && visibleFilings.length === 0 && (
                       <div style={{ textAlign: 'center', padding: '1.5rem', color: '#999', fontSize: '0.9rem' }}>
                         {hideRead && typeFiltered.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.'
-                          : typeFilter !== 'all' && filings.length > 0 ? `No ${typeFilter} filings found. Try a different filter.`
+                          : typeFilter !== 'all' && filings.length > 0 ? `No ${typeFilter === 'insider-big' ? 'big insider' : typeFilter === 'insider-routine' ? 'routine insider' : typeFilter} filings found. Try a different filter.`
                           : 'No filings in the last 90 days.'}
                       </div>
                     )}
@@ -505,7 +582,11 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                               </button>
                             )}
                             {f.read && (
-                              <span style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', color: '#999' }}>✓ Read</span>
+                              <button onClick={(e) => { e.stopPropagation(); markAsUnread(f.accessionNumber, t.cik); }}
+                                style={{ padding: '0.35rem 0.75rem', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2',
+                                  borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '500' }}>
+                                Mark unread
+                              </button>
                             )}
                             <a href={`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${f.cik}&type=${f.formType}&dateb=&owner=exclude&count=40`}
                               target="_blank" rel="noopener noreferrer"
