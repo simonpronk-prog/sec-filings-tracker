@@ -51,6 +51,10 @@ function App() {
   const [stockPrices, setStockPrices] = useState({});
   // Unread filter (when clicking the Unread tile)
   const [unreadFilter, setUnreadFilter] = useState(false);
+  // Bulk select: { cik: Set of accessionNumbers }
+  const [selectedFilings, setSelectedFilings] = useState({});
+  // Filing type filter: 'all', 'important', 'insider', or a Set of types
+  const [typeFilter, setTypeFilter] = useState('all');
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -120,6 +124,64 @@ function App() {
     } catch (e) {
       console.error('Error marking as read:', e);
     }
+  };
+
+  // Bulk mark filings as read
+  const bulkMarkAsRead = async (cik) => {
+    const selected = selectedFilings[cik];
+    if (!selected || selected.size === 0) return;
+    const accessionNumbers = [...selected];
+    try {
+      await apiFetch('/api/filings/bulk-read', {
+        method: 'POST',
+        body: JSON.stringify({ accessionNumbers })
+      });
+      // Optimistic update
+      setTickerFilings(prev => ({
+        ...prev,
+        [cik]: (prev[cik] || []).map(f =>
+          selected.has(f.accessionNumber) ? { ...f, read: true } : f
+        )
+      }));
+      // Update dashboard counts
+      const count = accessionNumbers.length;
+      if (dashboard) {
+        setDashboard(prev => ({
+          ...prev,
+          tickers: prev.tickers.map(t =>
+            t.cik === cik ? { ...t, unread_count: Math.max(0, parseInt(t.unread_count || 0) - count).toString() } : t
+          ),
+          summary: { ...prev.summary, totalUnread: Math.max(0, prev.summary.totalUnread - count) }
+        }));
+      }
+      // Clear selection
+      setSelectedFilings(prev => ({ ...prev, [cik]: new Set() }));
+    } catch (e) {
+      console.error('Bulk read error:', e);
+    }
+  };
+
+  // Toggle filing selection
+  const toggleFilingSelection = (cik, accessionNumber) => {
+    setSelectedFilings(prev => {
+      const current = new Set(prev[cik] || []);
+      if (current.has(accessionNumber)) current.delete(accessionNumber);
+      else current.add(accessionNumber);
+      return { ...prev, [cik]: current };
+    });
+  };
+
+  // Select/deselect all visible filings for a CIK
+  const toggleSelectAll = (cik, visibleFilings) => {
+    setSelectedFilings(prev => {
+      const current = new Set(prev[cik] || []);
+      const allSelected = visibleFilings.every(f => current.has(f.accessionNumber));
+      if (allSelected) {
+        return { ...prev, [cik]: new Set() };
+      } else {
+        return { ...prev, [cik]: new Set(visibleFilings.map(f => f.accessionNumber)) };
+      }
+    });
   };
 
   // Toggle expanded ticker
@@ -211,13 +273,16 @@ function App() {
         {activeTab === 'dashboard' && (
           <Dashboard
             dashboard={dashboard} loading={dashboardLoading} sentiment={sentiment}
-            onRefresh={() => { loadDashboard(); loadStockPrices(); setTickerFilings({}); }}
+            onRefresh={() => { loadDashboard(); loadStockPrices(); setTickerFilings({}); setSelectedFilings({}); }}
             expandedTicker={expandedTicker} toggleTicker={toggleTicker}
             tickerFilings={tickerFilings} tickerFilingsLoading={tickerFilingsLoading}
             hideRead={hideRead} setHideRead={setHideRead}
             markAsRead={markAsRead} expandedFiling={expandedFiling} setExpandedFiling={setExpandedFiling}
             stockPrices={stockPrices}
             unreadFilter={unreadFilter} setUnreadFilter={setUnreadFilter}
+            selectedFilings={selectedFilings} toggleFilingSelection={toggleFilingSelection}
+            toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead}
+            typeFilter={typeFilter} setTypeFilter={setTypeFilter}
           />
         )}
 
@@ -237,7 +302,10 @@ function App() {
 // ============================================
 // DASHBOARD COMPONENT — Expandable Watchlist
 // ============================================
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter }) {
+const IMPORTANT_TYPES = new Set(['10-K', '10-Q', '8-K', '6-K', '20-F', 'S-1', 'SC 13D', 'DEF 14A', '13F-HR']);
+const INSIDER_TYPES = new Set(['4', '144']);
+
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, typeFilter, setTypeFilter }) {
   return (
     <div>
       {/* Summary cards */}
@@ -290,7 +358,14 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
             const unread = parseInt(t.unread_count || 0);
             const filings = tickerFilings[t.cik] || [];
             const isLoadingFilings = tickerFilingsLoading[t.cik];
-            const visibleFilings = hideRead ? filings.filter(f => !f.read) : filings;
+            const typeFiltered = typeFilter === 'all' ? filings
+              : typeFilter === 'important' ? filings.filter(f => IMPORTANT_TYPES.has(f.formType))
+              : typeFilter === 'insider' ? filings.filter(f => INSIDER_TYPES.has(f.formType))
+              : filings;
+            const visibleFilings = hideRead ? typeFiltered.filter(f => !f.read) : typeFiltered;
+            const selected = selectedFilings[t.cik] || new Set();
+            const selectedCount = [...selected].filter(an => visibleFilings.some(f => f.accessionNumber === an)).length;
+            const allVisibleSelected = visibleFilings.length > 0 && visibleFilings.every(f => selected.has(f.accessionNumber));
             const price = stockPrices[t.ticker];
 
             return (
@@ -328,12 +403,52 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                 {/* Expanded filings list */}
                 {isExpanded && (
                   <div style={{ borderTop: '1px solid #eee', padding: '0.75rem 1.25rem' }}>
+
+                    {/* Filing type filter + bulk actions toolbar */}
+                    {!isLoadingFilings && filings.length > 0 && (
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {[
+                          { k: 'all', l: 'All' },
+                          { k: 'important', l: '🔴 Important' },
+                          { k: 'insider', l: '👤 Insider' }
+                        ].map(f => (
+                          <button key={f.k} onClick={(e) => { e.stopPropagation(); setTypeFilter(f.k); }}
+                            style={{ padding: '0.3rem 0.75rem', borderRadius: '16px', fontSize: '0.8rem', cursor: 'pointer',
+                              background: typeFilter === f.k ? '#667eea' : 'white', color: typeFilter === f.k ? 'white' : '#666',
+                              border: `1px solid ${typeFilter === f.k ? '#667eea' : '#ddd'}` }}>
+                            {f.l}
+                          </button>
+                        ))}
+                        <span style={{ color: '#999', fontSize: '0.8rem', marginLeft: '0.25rem' }}>{visibleFilings.length} filing{visibleFilings.length !== 1 ? 's' : ''}</span>
+
+                        {/* Select all + bulk actions (right side) */}
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          {visibleFilings.length > 0 && (
+                            <label onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.8rem', color: '#666' }}>
+                              <input type="checkbox" checked={allVisibleSelected} onChange={() => toggleSelectAll(t.cik, visibleFilings)}
+                                style={{ cursor: 'pointer' }} />
+                              Select all
+                            </label>
+                          )}
+                          {selectedCount > 0 && (
+                            <button onClick={(e) => { e.stopPropagation(); bulkMarkAsRead(t.cik); }}
+                              style={{ padding: '0.3rem 0.75rem', background: '#28a745', color: 'white', border: 'none',
+                                borderRadius: '4px', fontSize: '0.8rem', cursor: 'pointer', fontWeight: '500' }}>
+                              ✓ Mark {selectedCount} read
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {isLoadingFilings && (
                       <div style={{ textAlign: 'center', padding: '1.5rem', color: '#666' }}>Loading filings...</div>
                     )}
                     {!isLoadingFilings && visibleFilings.length === 0 && (
                       <div style={{ textAlign: 'center', padding: '1.5rem', color: '#999', fontSize: '0.9rem' }}>
-                        {hideRead && filings.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.' : 'No filings in the last 90 days.'}
+                        {hideRead && typeFiltered.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.'
+                          : typeFilter !== 'all' && filings.length > 0 ? `No ${typeFilter} filings found. Try a different filter.`
+                          : 'No filings in the last 90 days.'}
                       </div>
                     )}
                     {!isLoadingFilings && visibleFilings.map(f => {
@@ -341,27 +456,34 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                       const info = getFilingInfo(f.formType);
                       const has = f.ai_summary;
                       const isFilingExpanded = expandedFiling === f.accessionNumber;
+                      const isSelected = selected.has(f.accessionNumber);
 
                       return (
                         <div key={f.accessionNumber} style={{
                           padding: '1rem', marginBottom: '0.5rem', borderRadius: '6px',
-                          border: f.read ? '1px solid #eee' : '1px solid #c5cdf5',
-                          borderLeft: f.read ? '3px solid #eee' : '3px solid #667eea',
-                          background: f.read ? '#fafafa' : '#fdfdff',
-                          opacity: f.read ? 0.7 : 1
+                          border: isSelected ? '1px solid #667eea' : f.read ? '1px solid #eee' : '1px solid #c5cdf5',
+                          borderLeft: isSelected ? '3px solid #667eea' : f.read ? '3px solid #eee' : '3px solid #667eea',
+                          background: isSelected ? '#f0f2ff' : f.read ? '#fafafa' : '#fdfdff',
+                          opacity: f.read && !isSelected ? 0.7 : 1
                         }}>
                           {/* Filing header */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
-                                <span style={{ fontSize: '0.9rem' }}>{info.priority === 'high' ? '🔴' : info.priority === 'medium' ? '🟡' : '🟢'}</span>
-                                <span style={{ padding: '0.2rem 0.5rem', background: '#667eea', color: 'white', borderRadius: '4px', fontSize: '0.8rem', fontWeight: '500' }}>{f.formType}</span>
-                                <span style={{ fontSize: '0.8rem', color: '#666' }}>{info.desc.split('—')[0].trim()}</span>
-                                <span style={{ fontSize: '0.8rem', color: '#999' }}>{f.filedDate ? new Date(f.filedDate).toLocaleDateString() : ''}</span>
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', flex: 1 }}>
+                              {/* Checkbox */}
+                              <input type="checkbox" checked={isSelected}
+                                onChange={(e) => { e.stopPropagation(); toggleFilingSelection(t.cik, f.accessionNumber); }}
+                                style={{ marginTop: '0.15rem', cursor: 'pointer', flexShrink: 0 }} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+                                  <span style={{ fontSize: '0.9rem' }}>{info.priority === 'high' ? '🔴' : info.priority === 'medium' ? '🟡' : '🟢'}</span>
+                                  <span style={{ padding: '0.2rem 0.5rem', background: '#667eea', color: 'white', borderRadius: '4px', fontSize: '0.8rem', fontWeight: '500' }}>{f.formType}</span>
+                                  <span style={{ fontSize: '0.8rem', color: '#666' }}>{info.desc.split('—')[0].trim()}</span>
+                                  <span style={{ fontSize: '0.8rem', color: '#999' }}>{f.filedDate ? new Date(f.filedDate).toLocaleDateString() : ''}</span>
+                                </div>
+                                {has && <div style={{ fontSize: '0.9rem', color: '#333', lineHeight: '1.5', marginTop: '0.25rem' }}>🤖 {f.ai_summary}</div>}
+                                {has && f.numbers_confidence === 'low' && <div style={{ fontSize: '0.8rem', color: '#856404', marginTop: '0.25rem' }}>⚠️ Numbers may be approximate</div>}
+                                {!has && <div style={{ fontSize: '0.85rem', color: '#856404', marginTop: '0.25rem' }}>⏳ AI analysis pending</div>}
                               </div>
-                              {has && <div style={{ fontSize: '0.9rem', color: '#333', lineHeight: '1.5', marginTop: '0.25rem' }}>🤖 {f.ai_summary}</div>}
-                              {has && f.numbers_confidence === 'low' && <div style={{ fontSize: '0.8rem', color: '#856404', marginTop: '0.25rem' }}>⚠️ Numbers may be approximate</div>}
-                              {!has && <div style={{ fontSize: '0.85rem', color: '#856404', marginTop: '0.25rem' }}>⏳ AI analysis pending</div>}
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem', minWidth: '100px' }}>
                               {has && f.expected_move_avg && (
@@ -374,7 +496,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                           </div>
 
                           {/* Action buttons */}
-                          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginLeft: '1.5rem' }}>
                             {!f.read && (
                               <button onClick={(e) => { e.stopPropagation(); markAsRead(f.accessionNumber, t.cik); }}
                                 style={{ padding: '0.35rem 0.75rem', background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9',
@@ -402,7 +524,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
 
                           {/* Expanded full analysis */}
                           {isFilingExpanded && has && (
-                            <div style={{ marginTop: '0.75rem', padding: '1rem', background: '#f8f9fa', borderRadius: '6px', borderTop: '1px solid #eee' }}>
+                            <div style={{ marginTop: '0.75rem', padding: '1rem', background: '#f8f9fa', borderRadius: '6px', borderTop: '1px solid #eee', marginLeft: '1.5rem' }}>
                               <div style={{ marginBottom: '0.5rem' }}><strong>Direction:</strong> {fs.emoji} {fs.text}</div>
                               <div style={{ marginBottom: '0.5rem' }}><strong>Expected:</strong> {f.expected_move_min}% to {f.expected_move_max}% (avg {f.expected_move_avg}%)</div>
                               <div style={{ marginBottom: '0.75rem' }}><strong>Confidence:</strong> {f.confidence_score}%</div>

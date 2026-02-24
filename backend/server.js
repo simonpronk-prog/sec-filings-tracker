@@ -652,6 +652,42 @@ app.post('/api/filings/:accessionNumber/read', authenticateToken, async (req, re
   }
 });
 
+// Bulk mark filings as read
+app.post('/api/filings/bulk-read', authenticateToken, async (req, res) => {
+  try {
+    const { accessionNumbers } = req.body;
+    if (!Array.isArray(accessionNumbers) || accessionNumbers.length === 0) {
+      return res.status(400).json({ error: 'accessionNumbers array required' });
+    }
+
+    // Update all matching user_filings in one query
+    await pool.query(
+      `UPDATE user_filings SET read = true
+       WHERE user_id = $1
+         AND filing_id IN (
+           SELECT id FROM filings WHERE accession_number = ANY($2)
+         )`,
+      [req.user.id, accessionNumbers]
+    );
+
+    // Also insert any missing user_filings links (in case they don't exist yet)
+    await pool.query(
+      `INSERT INTO user_filings (user_id, filing_id, read)
+       SELECT $1, f.id, true
+       FROM filings f
+       WHERE f.accession_number = ANY($2)
+         AND NOT EXISTS (SELECT 1 FROM user_filings uf WHERE uf.user_id = $1 AND uf.filing_id = f.id)
+       ON CONFLICT (user_id, filing_id) DO UPDATE SET read = true`,
+      [req.user.id, accessionNumbers]
+    );
+
+    res.json({ message: `${accessionNumbers.length} filings marked as read` });
+  } catch (error) {
+    console.error('Bulk read error:', error);
+    res.status(500).json({ error: 'Error marking filings as read' });
+  }
+});
+
 // Regenerate AI analysis for a filing (updates shared analysis — benefits all users)
 app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req, res) => {
   try {
