@@ -55,6 +55,9 @@ function App() {
   const [selectedFilings, setSelectedFilings] = useState({});
   // Filing type filter: 'all', 'important', 'insider', or a Set of types
   const [typeFilter, setTypeFilter] = useState('all');
+  // Analyst personas
+  const [personas, setPersonas] = useState([]);
+  const [personasLoading, setPersonasLoading] = useState(false);
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -76,6 +79,10 @@ function App() {
 
   const loadStockPrices = async () => {
     try { const r = await apiFetch('/api/stock-prices'); if (r.ok) setStockPrices(await r.json()); } catch (e) {}
+  };
+
+  const loadPersonas = async () => {
+    try { const r = await apiFetch('/api/personas'); if (r.ok) setPersonas(await r.json()); } catch (e) {}
   };
 
   // Load filings for a single CIK when expanding
@@ -257,7 +264,7 @@ function App() {
     }
   };
 
-  useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); loadStockPrices(); } }, [isAuthenticated]);
+  useEffect(() => { if (isAuthenticated) { loadWatchlist(); loadDashboard(); loadStockPrices(); loadPersonas(); } }, [isAuthenticated]);
   useEffect(() => { if (isAuthenticated && activeTab === 'dashboard' && !dashboard) loadDashboard(); }, [activeTab]);
 
   useEffect(() => {
@@ -355,6 +362,7 @@ function App() {
 
         {activeTab === 'settings' && (<Settings
           aiPreferences={aiPreferences} saving={settingsSaving} onSave={saveAiPreferences}
+          personas={personas} onPersonasChange={loadPersonas} apiFetch={apiFetch}
         />)}
       </div>
     </div>
@@ -604,40 +612,169 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                           </div>
 
                           {/* Expanded full analysis */}
-                          {isFilingExpanded && has && (
-                            <div style={{ marginTop: '0.75rem', padding: '1rem', background: '#f8f9fa', borderRadius: '6px', borderTop: '1px solid #eee', marginLeft: '1.5rem' }}>
-                              <div style={{ marginBottom: '0.5rem' }}><strong>Direction:</strong> {fs.emoji} {fs.text}</div>
-                              <div style={{ marginBottom: '0.5rem' }}><strong>Expected:</strong> {f.expected_move_min}% to {f.expected_move_max}% (avg {f.expected_move_avg}%)</div>
-                              <div style={{ marginBottom: '0.75rem' }}><strong>Confidence:</strong> {f.confidence_score}%</div>
-                              {f.bullish_factors?.length > 0 && (
-                                <div style={{ marginBottom: '0.5rem' }}>
-                                  <div style={{ fontWeight: '600', color: '#28a745', marginBottom: '0.25rem', fontSize: '0.9rem' }}>Bullish:</div>
-                                  {f.bullish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.85rem', color: '#333', marginLeft: '1rem' }}>• {x}</div>)}
-                                </div>
-                              )}
-                              {f.bearish_factors?.length > 0 && (
-                                <div style={{ marginBottom: '0.5rem' }}>
-                                  <div style={{ fontWeight: '600', color: '#dc3545', marginBottom: '0.25rem', fontSize: '0.9rem' }}>Bearish:</div>
-                                  {f.bearish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.85rem', color: '#333', marginLeft: '1rem' }}>• {x}</div>)}
-                                </div>
-                              )}
-                              {f.ai_consensus?.analyses && (
-                                <div style={{ padding: '0.75rem', background: 'white', borderRadius: '4px', border: '1px solid #e0e0e0', marginTop: '0.5rem' }}>
-                                  <div style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>AI Consensus ({f.ai_consensus.provider_count} models):</div>
-                                  {f.ai_consensus.analyses.map((a, i) => (
-                                    <div key={i} style={{ fontSize: '0.85rem', color: '#555' }}>
-                                      {a.provider}: {a.sentiment === 'bullish' ? '⬆️' : a.sentiment === 'bearish' ? '⬇️' : '➡️'} {a.expected_move > 0 ? '+' : ''}{a.expected_move}% ({a.confidence}%)
+                          {isFilingExpanded && has && (() => {
+                            const pro = f.pro_analysis;
+                            if (pro) {
+                              // Pro Analysis view
+                              return (
+                                <div style={{ marginTop: '0.75rem', marginLeft: '1.5rem' }}>
+                                  {/* Analyst Note */}
+                                  {pro.analyst_note && (
+                                    <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '0.95rem', marginBottom: '0.5rem', color: '#1a1a2e' }}>📝 Research Note</div>
+                                      <div style={{ fontSize: '0.9rem', color: '#333', lineHeight: '1.7', whiteSpace: 'pre-wrap' }}>{pro.analyst_note}</div>
                                     </div>
-                                  ))}
+                                  )}
+
+                                  {/* KPI Grid */}
+                                  {pro.kpis && Object.keys(pro.kpis).length > 0 && (
+                                    <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '0.95rem', marginBottom: '0.75rem', color: '#1a1a2e' }}>📊 Key Metrics</div>
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.5rem' }}>
+                                        {Object.entries(pro.kpis).filter(([k, v]) => v !== null && v !== undefined && k !== 'segments' && k !== 'new_metrics' && k !== 'key_terms' && k !== 'board_changes' && k !== 'key_proposals').map(([k, v]) => (
+                                          <div key={k} style={{ padding: '0.5rem 0.75rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #eee' }}>
+                                            <div style={{ fontSize: '0.7rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k.replace(/_/g, ' ')}</div>
+                                            <div style={{ fontSize: '0.9rem', fontWeight: '600', color: '#1a1a2e', marginTop: '0.15rem' }}>{typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      {/* Segments */}
+                                      {pro.kpis.segments?.length > 0 && (
+                                        <div style={{ marginTop: '0.75rem' }}>
+                                          <div style={{ fontSize: '0.8rem', fontWeight: '600', color: '#555', marginBottom: '0.25rem' }}>Business Segments:</div>
+                                          {pro.kpis.segments.map((s, i) => (
+                                            <div key={i} style={{ fontSize: '0.85rem', color: '#333', marginLeft: '0.5rem' }}>
+                                              {s.name}: {s.revenue}{s.growth ? ` (${s.growth})` : ''}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* The Desk — Persona Takes */}
+                                  {pro.persona_takes?.length > 0 && (
+                                    <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '0.95rem', marginBottom: '0.75rem', color: '#1a1a2e' }}>🎙️ The Desk</div>
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.5rem' }}>
+                                        {pro.persona_takes.map((pt, i) => (
+                                          <div key={i} style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #eee' }}>
+                                            <div style={{ fontWeight: '600', fontSize: '0.85rem', marginBottom: '0.35rem', color: '#1a1a2e' }}>
+                                              {pt.emoji} {pt.name}
+                                            </div>
+                                            <div style={{ fontSize: '0.85rem', color: '#444', lineHeight: '1.5', fontStyle: 'italic' }}>"{pt.take}"</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Bullish / Bearish columns */}
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                                    {f.bullish_factors?.length > 0 && (
+                                      <div style={{ padding: '0.75rem', background: '#f0fff4', borderRadius: '8px', border: '1px solid #c6f6d5' }}>
+                                        <div style={{ fontWeight: '700', color: '#22543d', marginBottom: '0.5rem', fontSize: '0.9rem' }}>⬆️ Bullish ({f.bullish_factors.length})</div>
+                                        {f.bullish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.82rem', color: '#2d3748', marginBottom: '0.35rem', paddingLeft: '0.5rem', borderLeft: '2px solid #48bb78' }}>{x}</div>)}
+                                      </div>
+                                    )}
+                                    {f.bearish_factors?.length > 0 && (
+                                      <div style={{ padding: '0.75rem', background: '#fff5f5', borderRadius: '8px', border: '1px solid #fed7d7' }}>
+                                        <div style={{ fontWeight: '700', color: '#742a2a', marginBottom: '0.5rem', fontSize: '0.9rem' }}>⬇️ Bearish ({f.bearish_factors.length})</div>
+                                        {f.bearish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.82rem', color: '#2d3748', marginBottom: '0.35rem', paddingLeft: '0.5rem', borderLeft: '2px solid #fc8181' }}>{x}</div>)}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Management Signals */}
+                                  {pro.management_signals && (pro.management_signals.tone || pro.management_signals.guidance_direction || pro.management_signals.key_quote) && (
+                                    <div style={{ padding: '0.75rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.5rem', color: '#1a1a2e' }}>🎯 Management Signals</div>
+                                      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+                                        {pro.management_signals.tone && <span><strong>Tone:</strong> {pro.management_signals.tone}</span>}
+                                        {pro.management_signals.guidance_direction && <span><strong>Guidance:</strong> {pro.management_signals.guidance_direction}</span>}
+                                        {pro.management_signals.buyback_announced && <span>💰 Buyback announced</span>}
+                                        {pro.management_signals.insider_buying && <span>📈 Insider buying</span>}
+                                      </div>
+                                      {pro.management_signals.key_quote && (
+                                        <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#555', fontStyle: 'italic', borderLeft: '3px solid #667eea', paddingLeft: '0.75rem' }}>
+                                          "{pro.management_signals.key_quote}"
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Action Items */}
+                                  {pro.action_items?.length > 0 && (
+                                    <div style={{ padding: '0.75rem', background: '#fffff0', borderRadius: '8px', border: '1px solid #fefcbf', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.5rem', color: '#744210' }}>👀 What to Watch</div>
+                                      {pro.action_items.map((item, i) => (
+                                        <div key={i} style={{ fontSize: '0.85rem', color: '#2d3748', marginBottom: '0.25rem', paddingLeft: '0.5rem' }}>📌 {item}</div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* Summary strip: Direction + Expected + Confidence */}
+                                  <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', padding: '0.75rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #eee', marginBottom: '0.75rem', fontSize: '0.85rem' }}>
+                                    <span><strong>Direction:</strong> {fs.emoji} {fs.text}</span>
+                                    <span><strong>Expected:</strong> {f.expected_move_min}% to {f.expected_move_max}% (avg {f.expected_move_avg}%)</span>
+                                    <span><strong>Confidence:</strong> {f.confidence_score}%</span>
+                                  </div>
+
+                                  {/* AI Consensus + Short Interest */}
+                                  {f.ai_consensus?.analyses && (
+                                    <div style={{ padding: '0.75rem', background: 'white', borderRadius: '6px', border: '1px solid #e0e0e0', marginBottom: '0.5rem' }}>
+                                      <div style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>AI Consensus ({f.ai_consensus.provider_count} models):</div>
+                                      {f.ai_consensus.analyses.map((a, i) => (
+                                        <div key={i} style={{ fontSize: '0.85rem', color: '#555' }}>
+                                          {a.provider}: {a.sentiment === 'bullish' ? '⬆️' : a.sentiment === 'bearish' ? '⬇️' : '➡️'} {a.expected_move > 0 ? '+' : ''}{a.expected_move}% ({a.confidence}%)
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {f.short_interest_percent && (
+                                    <div style={{ padding: '0.75rem', background: 'white', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                                      <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>Short Interest: {f.short_interest_percent}%{f.short_interest_percent > 15 ? ' 🚀' : ''}</div>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                              {f.short_interest_percent && (
-                                <div style={{ padding: '0.75rem', background: 'white', borderRadius: '4px', border: '1px solid #e0e0e0', marginTop: '0.5rem' }}>
-                                  <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>Short Interest: {f.short_interest_percent}%{f.short_interest_percent > 15 ? ' 🚀' : ''}</div>
-                                </div>
-                              )}
-                            </div>
-                          )}
+                              );
+                            }
+                            // Legacy simple view (no pro_analysis)
+                            return (
+                              <div style={{ marginTop: '0.75rem', padding: '1rem', background: '#f8f9fa', borderRadius: '6px', borderTop: '1px solid #eee', marginLeft: '1.5rem' }}>
+                                <div style={{ marginBottom: '0.5rem' }}><strong>Direction:</strong> {fs.emoji} {fs.text}</div>
+                                <div style={{ marginBottom: '0.5rem' }}><strong>Expected:</strong> {f.expected_move_min}% to {f.expected_move_max}% (avg {f.expected_move_avg}%)</div>
+                                <div style={{ marginBottom: '0.75rem' }}><strong>Confidence:</strong> {f.confidence_score}%</div>
+                                {f.bullish_factors?.length > 0 && (
+                                  <div style={{ marginBottom: '0.5rem' }}>
+                                    <div style={{ fontWeight: '600', color: '#28a745', marginBottom: '0.25rem', fontSize: '0.9rem' }}>Bullish:</div>
+                                    {f.bullish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.85rem', color: '#333', marginLeft: '1rem' }}>• {x}</div>)}
+                                  </div>
+                                )}
+                                {f.bearish_factors?.length > 0 && (
+                                  <div style={{ marginBottom: '0.5rem' }}>
+                                    <div style={{ fontWeight: '600', color: '#dc3545', marginBottom: '0.25rem', fontSize: '0.9rem' }}>Bearish:</div>
+                                    {f.bearish_factors.map((x, i) => <div key={i} style={{ fontSize: '0.85rem', color: '#333', marginLeft: '1rem' }}>• {x}</div>)}
+                                  </div>
+                                )}
+                                {f.ai_consensus?.analyses && (
+                                  <div style={{ padding: '0.75rem', background: 'white', borderRadius: '4px', border: '1px solid #e0e0e0', marginTop: '0.5rem' }}>
+                                    <div style={{ fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.9rem' }}>AI Consensus ({f.ai_consensus.provider_count} models):</div>
+                                    {f.ai_consensus.analyses.map((a, i) => (
+                                      <div key={i} style={{ fontSize: '0.85rem', color: '#555' }}>
+                                        {a.provider}: {a.sentiment === 'bullish' ? '⬆️' : a.sentiment === 'bearish' ? '⬇️' : '➡️'} {a.expected_move > 0 ? '+' : ''}{a.expected_move}% ({a.confidence}%)
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {f.short_interest_percent && (
+                                  <div style={{ padding: '0.75rem', background: 'white', borderRadius: '4px', border: '1px solid #e0e0e0', marginTop: '0.5rem' }}>
+                                    <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>Short Interest: {f.short_interest_percent}%{f.short_interest_percent > 15 ? ' 🚀' : ''}</div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -699,12 +836,73 @@ function Watchlist({ watchlist, searchQuery, setSearchQuery, searchResults, onAd
 // ============================================
 // SETTINGS COMPONENT
 // ============================================
-function Settings({ aiPreferences, saving, onSave }) {
+function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, apiFetch }) {
+  const [showAddPersona, setShowAddPersona] = useState(false);
+  const [editingPersona, setEditingPersona] = useState(null);
+  const [personaForm, setPersonaForm] = useState({ name: '', short_name: '', emoji: '', framework: '', key_metrics: '', style: '' });
+  const [personaSaving, setPersonaSaving] = useState(false);
+
   const models = [
     { key: 'claude', name: 'Anthropic Claude Sonnet 4', desc: 'Nuanced insights and detailed reasoning.', cost: '~$0.018/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'grok', name: 'xAI Grok 3', desc: 'Fast analysis with trading focus.', cost: '~$0.001/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'gemini', name: 'Google Gemini 1.5 Pro', desc: 'Fast and accurate financial analysis.', cost: 'Free tier available', badge: 'FREE', badgeColor: '#28a745' },
   ];
+
+  const resetForm = () => {
+    setPersonaForm({ name: '', short_name: '', emoji: '', framework: '', key_metrics: '', style: '' });
+    setShowAddPersona(false);
+    setEditingPersona(null);
+  };
+
+  const savePersona = async () => {
+    setPersonaSaving(true);
+    try {
+      const body = {
+        ...personaForm,
+        key_metrics: typeof personaForm.key_metrics === 'string'
+          ? personaForm.key_metrics.split(',').map(s => s.trim()).filter(Boolean)
+          : personaForm.key_metrics
+      };
+
+      if (editingPersona) {
+        await apiFetch(`/api/personas/${editingPersona}`, { method: 'PUT', body: JSON.stringify(body) });
+      } else {
+        await apiFetch('/api/personas', { method: 'POST', body: JSON.stringify(body) });
+      }
+      resetForm();
+      onPersonasChange();
+    } catch (e) { console.error('Save persona error:', e); }
+    finally { setPersonaSaving(false); }
+  };
+
+  const togglePersona = async (id, enabled) => {
+    try {
+      await apiFetch(`/api/personas/${id}`, { method: 'PUT', body: JSON.stringify({ enabled: !enabled }) });
+      onPersonasChange();
+    } catch (e) { console.error('Toggle persona error:', e); }
+  };
+
+  const deletePersona = async (id) => {
+    if (!window.confirm('Delete this analyst persona?')) return;
+    try {
+      await apiFetch(`/api/personas/${id}`, { method: 'DELETE' });
+      onPersonasChange();
+    } catch (e) { console.error('Delete persona error:', e); }
+  };
+
+  const startEdit = (p) => {
+    setEditingPersona(p.id);
+    setPersonaForm({
+      name: p.name,
+      short_name: p.short_name,
+      emoji: p.emoji || '',
+      framework: p.framework,
+      key_metrics: Array.isArray(p.key_metrics) ? p.key_metrics.join(', ') : p.key_metrics,
+      style: p.style
+    });
+    setShowAddPersona(true);
+  };
+
   return (
     <div>
       <h2 style={{ marginBottom: '1rem' }}>Settings</h2>
@@ -719,7 +917,7 @@ function Settings({ aiPreferences, saving, onSave }) {
       </div>
 
       {/* AI Models */}
-      <div style={{ background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+      <div style={{ background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', marginBottom: '1.5rem' }}>
         <h3 style={{ marginTop: 0, marginBottom: '1rem' }}>AI Analysis Models</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {models.map(m => (
@@ -741,6 +939,124 @@ function Settings({ aiPreferences, saving, onSave }) {
           ))}
         </div>
         {saving && <div style={{ marginTop: '1rem', padding: '0.75rem', background: '#d1ecf1', color: '#0c5460', borderRadius: '4px', fontSize: '0.9rem' }}>Saving...</div>}
+      </div>
+
+      {/* Analyst Personas */}
+      <div style={{ background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h3 style={{ margin: 0 }}>Your Analysts</h3>
+          <button onClick={() => { resetForm(); setShowAddPersona(true); }}
+            style={{ padding: '0.5rem 1rem', background: '#667eea', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '500' }}>
+            + Add Analyst
+          </button>
+        </div>
+        <p style={{ color: '#666', fontSize: '0.85rem', marginTop: 0, marginBottom: '1rem' }}>
+          These analysts influence how AI interprets SEC filings. Each persona brings their own analytical framework and communication style.
+          Disable a persona to exclude their take from future analyses.
+        </p>
+
+        {/* Persona cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+          {personas.map(p => (
+            <div key={p.id} style={{
+              padding: '1rem', borderRadius: '8px',
+              border: p.enabled ? '2px solid #667eea' : '2px solid #ddd',
+              background: p.enabled ? '#f8f9ff' : '#fafafa',
+              opacity: p.enabled ? 1 : 0.6,
+              transition: 'all 0.2s'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontWeight: '700', fontSize: '1rem' }}>{p.emoji} {p.name}</div>
+                  <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.1rem' }}>{p.short_name}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                  <button onClick={() => togglePersona(p.id, p.enabled)}
+                    style={{ padding: '0.25rem 0.5rem', background: p.enabled ? '#e8f5e9' : '#fff3e0', color: p.enabled ? '#2e7d32' : '#e65100',
+                      border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '500' }}>
+                    {p.enabled ? 'On' : 'Off'}
+                  </button>
+                  <button onClick={() => startEdit(p)}
+                    style={{ padding: '0.25rem 0.5rem', background: '#e3f2fd', color: '#1565c0', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                    Edit
+                  </button>
+                  {!p.is_default && (
+                    <button onClick={() => deletePersona(p.id)}
+                      style={{ padding: '0.25rem 0.5rem', background: '#ffebee', color: '#c62828', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.5rem', lineHeight: '1.4' }}>
+                <strong>Framework:</strong> {p.framework.length > 120 ? p.framework.substring(0, 120) + '...' : p.framework}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.25rem' }}>
+                <strong>Style:</strong> {p.style.length > 80 ? p.style.substring(0, 80) + '...' : p.style}
+              </div>
+              {p.is_default && <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '0.35rem' }}>Default analyst — cannot be deleted</div>}
+            </div>
+          ))}
+        </div>
+
+        {/* Add/Edit Persona Form */}
+        {showAddPersona && (
+          <div style={{ marginTop: '1rem', padding: '1.25rem', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+            <h4 style={{ margin: '0 0 1rem 0' }}>{editingPersona ? 'Edit Analyst' : 'Add New Analyst'}</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Name *</label>
+                <input value={personaForm.name} onChange={e => setPersonaForm({ ...personaForm, name: e.target.value })}
+                  placeholder="e.g. Peter Lynch"
+                  style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Short Name *</label>
+                  <input value={personaForm.short_name} onChange={e => setPersonaForm({ ...personaForm, short_name: e.target.value })}
+                    placeholder="e.g. lynch" disabled={!!editingPersona}
+                    style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.9rem', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ width: '60px' }}>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Emoji</label>
+                  <input value={personaForm.emoji} onChange={e => setPersonaForm({ ...personaForm, emoji: e.target.value })}
+                    placeholder="📈" maxLength={4}
+                    style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.9rem', boxSizing: 'border-box', textAlign: 'center' }} />
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: '0.75rem' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Analytical Framework *</label>
+              <textarea value={personaForm.framework} onChange={e => setPersonaForm({ ...personaForm, framework: e.target.value })}
+                placeholder="Describe their investment philosophy and analytical approach. E.g. 'Growth at a reasonable price (GARP), looks for companies with strong earnings growth trading at reasonable PE multiples...'"
+                rows={3}
+                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.85rem', resize: 'vertical', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginTop: '0.75rem' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Key Metrics (comma separated) *</label>
+              <input value={personaForm.key_metrics} onChange={e => setPersonaForm({ ...personaForm, key_metrics: e.target.value })}
+                placeholder="e.g. PEG ratio, earnings growth rate, ROE, debt-to-equity"
+                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginTop: '0.75rem' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.25rem' }}>Communication Style *</label>
+              <input value={personaForm.style} onChange={e => setPersonaForm({ ...personaForm, style: e.target.value })}
+                placeholder="e.g. Folksy, uses real-world analogies, 'invest in what you know'"
+                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.85rem', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+              <button onClick={savePersona} disabled={personaSaving || !personaForm.name || !personaForm.framework || !personaForm.key_metrics || !personaForm.style}
+                style={{ padding: '0.5rem 1.25rem', background: '#667eea', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '500',
+                  opacity: (personaSaving || !personaForm.name || !personaForm.framework || !personaForm.key_metrics || !personaForm.style) ? 0.5 : 1 }}>
+                {personaSaving ? 'Saving...' : editingPersona ? 'Update Analyst' : 'Add Analyst'}
+              </button>
+              <button onClick={resetForm}
+                style={{ padding: '0.5rem 1.25rem', background: 'white', color: '#666', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

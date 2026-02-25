@@ -38,6 +38,9 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL
 });
 
+// Wire up database pool to AI analysis service for persona loading
+aiAnalysis.setPool(pool);
+
 // Middleware
 app.use(cors({
   origin: [
@@ -513,6 +516,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
               ai_consensus: existingFiling.ai_consensus,
               short_interest_percent: existingFiling.short_interest_percent,
               numbers_confidence: existingFiling.numbers_confidence,
+              pro_analysis: existingFiling.pro_analysis,
               read: existingFiling.read || false,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
@@ -567,8 +571,8 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 company, primary_document, report_date, ai_summary, ai_detailed_summary,
                 sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
                 confidence_score, bullish_factors, bearish_factors, ai_consensus,
-                short_interest_percent, short_interest_updated_at, numbers_confidence, analysis_generated_at
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
+                short_interest_percent, short_interest_updated_at, numbers_confidence, pro_analysis, analysis_generated_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW())
               ON CONFLICT (accession_number)
               DO UPDATE SET
                 ai_summary = EXCLUDED.ai_summary,
@@ -584,6 +588,7 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 short_interest_percent = EXCLUDED.short_interest_percent,
                 short_interest_updated_at = EXCLUDED.short_interest_updated_at,
                 numbers_confidence = EXCLUDED.numbers_confidence,
+                pro_analysis = EXCLUDED.pro_analysis,
                 analysis_generated_at = NOW()
               RETURNING id`,
               [
@@ -597,7 +602,8 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
                 analysis.bearish_factors, JSON.stringify(analysis.ai_consensus),
                 shortData?.short_volume_percent || null,
                 shortData?.updated_at || null,
-                analysis.numbers_confidence || 'low'
+                analysis.numbers_confidence || 'low',
+                analysis.pro_analysis ? JSON.stringify(analysis.pro_analysis) : null
               ]
             );
 
@@ -790,8 +796,9 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
         ai_consensus = $10,
         short_interest_percent = $11,
         short_interest_updated_at = $12,
+        pro_analysis = $13,
         analysis_generated_at = NOW()
-       WHERE accession_number = $13`,
+       WHERE accession_number = $14`,
       [
         analysis.brief_summary,
         analysis.detailed_summary,
@@ -805,6 +812,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
         JSON.stringify(analysis.ai_consensus),
         shortData?.short_volume_percent || null,
         shortData?.updated_at || null,
+        analysis.pro_analysis ? JSON.stringify(analysis.pro_analysis) : null,
         accessionNumber
       ]
     );
@@ -817,6 +825,117 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
   } catch (error) {
     console.error('Regenerate analysis error:', error);
     res.status(500).json({ error: 'Error regenerating analysis' });
+  }
+});
+
+// ============================================
+// ANALYST PERSONA ROUTES
+// ============================================
+
+// Get all personas
+app.get('/api/personas', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM analyst_personas ORDER BY is_default DESC, created_at ASC'
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get personas error:', error);
+    res.status(500).json({ error: 'Error fetching personas' });
+  }
+});
+
+// Add a new persona
+app.post('/api/personas', authenticateToken, async (req, res) => {
+  try {
+    const { name, short_name, emoji, framework, key_metrics, style } = req.body;
+
+    if (!name || !short_name || !framework || !key_metrics || !style) {
+      return res.status(400).json({ error: 'Missing required fields: name, short_name, framework, key_metrics, style' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO analyst_personas (name, short_name, emoji, framework, key_metrics, style, enabled, is_default)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false)
+       RETURNING *`,
+      [name, short_name.toLowerCase().replace(/\s+/g, '_'), emoji || '', framework, key_metrics, style]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'A persona with that short name already exists' });
+    }
+    console.error('Create persona error:', error);
+    res.status(500).json({ error: 'Error creating persona' });
+  }
+});
+
+// Update a persona
+app.put('/api/personas/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, emoji, framework, key_metrics, style, enabled } = req.body;
+
+    // Check if persona exists
+    const existing = await pool.query('SELECT * FROM analyst_personas WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Persona not found' });
+    }
+
+    const persona = existing.rows[0];
+
+    // Build dynamic update
+    const updates = [];
+    const values = [];
+    let paramCount = 0;
+
+    if (name !== undefined) { paramCount++; updates.push(`name = $${paramCount}`); values.push(name); }
+    if (emoji !== undefined) { paramCount++; updates.push(`emoji = $${paramCount}`); values.push(emoji); }
+    if (framework !== undefined) { paramCount++; updates.push(`framework = $${paramCount}`); values.push(framework); }
+    if (key_metrics !== undefined) { paramCount++; updates.push(`key_metrics = $${paramCount}`); values.push(key_metrics); }
+    if (style !== undefined) { paramCount++; updates.push(`style = $${paramCount}`); values.push(style); }
+    if (enabled !== undefined) { paramCount++; updates.push(`enabled = $${paramCount}`); values.push(enabled); }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    paramCount++;
+    values.push(id);
+
+    const result = await pool.query(
+      `UPDATE analyst_personas SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      values
+    );
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update persona error:', error);
+    res.status(500).json({ error: 'Error updating persona' });
+  }
+});
+
+// Delete a persona (only non-default)
+app.delete('/api/personas/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if it's a default persona
+    const existing = await pool.query('SELECT * FROM analyst_personas WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Persona not found' });
+    }
+
+    if (existing.rows[0].is_default) {
+      return res.status(403).json({ error: 'Cannot delete default personas. You can disable them instead.' });
+    }
+
+    await pool.query('DELETE FROM analyst_personas WHERE id = $1', [id]);
+    res.json({ success: true, message: 'Persona deleted' });
+  } catch (error) {
+    console.error('Delete persona error:', error);
+    res.status(500).json({ error: 'Error deleting persona' });
   }
 });
 
@@ -1132,6 +1251,7 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
               ai_consensus: existingFiling.ai_consensus,
               short_interest_percent: existingFiling.short_interest_percent,
               numbers_confidence: existingFiling.numbers_confidence,
+              pro_analysis: existingFiling.pro_analysis,
               read: existingFiling.read || false,
               priority: aiAnalysis.getFilingPriority(filing.formType)
             };
@@ -1169,8 +1289,8 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
                 company, primary_document, report_date, ai_summary, ai_detailed_summary,
                 sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
                 confidence_score, bullish_factors, bearish_factors, ai_consensus,
-                short_interest_percent, short_interest_updated_at, numbers_confidence, analysis_generated_at
-              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
+                short_interest_percent, short_interest_updated_at, numbers_confidence, pro_analysis, analysis_generated_at
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
               ON CONFLICT (accession_number) DO UPDATE SET
                 ai_summary = EXCLUDED.ai_summary, ai_detailed_summary = EXCLUDED.ai_detailed_summary,
                 sentiment_direction = EXCLUDED.sentiment_direction,
@@ -1179,7 +1299,8 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
                 bullish_factors = EXCLUDED.bullish_factors, bearish_factors = EXCLUDED.bearish_factors,
                 ai_consensus = EXCLUDED.ai_consensus, short_interest_percent = EXCLUDED.short_interest_percent,
                 short_interest_updated_at = EXCLUDED.short_interest_updated_at,
-                numbers_confidence = EXCLUDED.numbers_confidence, analysis_generated_at = NOW()
+                numbers_confidence = EXCLUDED.numbers_confidence, pro_analysis = EXCLUDED.pro_analysis,
+                analysis_generated_at = NOW()
               RETURNING id`,
               [filing.cik, filing.formType, filing.filedDate, filing.description,
                filing.accessionNumber, filing.company, filing.primaryDocument, filing.reportDate,
@@ -1187,7 +1308,8 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
                analysis.expected_move_min, analysis.expected_move_max, analysis.expected_move_avg,
                analysis.confidence_score, analysis.bullish_factors, analysis.bearish_factors,
                JSON.stringify(analysis.ai_consensus), shortData?.short_volume_percent || null,
-               shortData?.updated_at || null, analysis.numbers_confidence || 'low']
+               shortData?.updated_at || null, analysis.numbers_confidence || 'low',
+               analysis.pro_analysis ? JSON.stringify(analysis.pro_analysis) : null]
             );
 
             await pool.query(
@@ -1322,6 +1444,20 @@ async function initDatabase() {
         sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      -- Analyst personas table
+      CREATE TABLE IF NOT EXISTS analyst_personas (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        short_name VARCHAR(30) NOT NULL UNIQUE,
+        emoji VARCHAR(10) DEFAULT '',
+        framework TEXT NOT NULL,
+        key_metrics TEXT[] NOT NULL,
+        style TEXT NOT NULL,
+        enabled BOOLEAN DEFAULT true,
+        is_default BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
       CREATE INDEX IF NOT EXISTS idx_filings_accession ON filings(accession_number);
       CREATE INDEX IF NOT EXISTS idx_filings_cik ON filings(cik);
@@ -1329,7 +1465,44 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_user_filings_user ON user_filings(user_id);
       CREATE INDEX IF NOT EXISTS idx_user_filings_unread ON user_filings(user_id, read) WHERE read = false;
       CREATE INDEX IF NOT EXISTS idx_user_filings_filing ON user_filings(filing_id);
+
+      -- Add pro_analysis column if it doesn't exist
+      DO $$ BEGIN
+        ALTER TABLE filings ADD COLUMN IF NOT EXISTS pro_analysis JSONB DEFAULT NULL;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END $$;
     `);
+
+    // Seed default analyst personas if table is empty
+    const personaCount = await pool.query('SELECT COUNT(*) FROM analyst_personas');
+    if (parseInt(personaCount.rows[0].count) === 0) {
+      console.log('🎭 Seeding default analyst personas...');
+      await pool.query(`
+        INSERT INTO analyst_personas (name, short_name, emoji, framework, key_metrics, style, is_default, enabled) VALUES
+        ('Jim Cramer', 'cramer', '🔥',
+         'Cash flow king. Focus on operating and free cash flow generation, management quality and conviction, buyback programs and dividend growth, the Oscillator (overbought/oversold signals), sector rotation timing. Loves companies that return capital to shareholders. Looks for CEO confidence signals.',
+         ARRAY['operating_cash_flow', 'free_cash_flow', 'buyback_programs', 'dividend_growth', 'management_track_record', 'ceo_confidence_signals', 'sector_rotation'],
+         'Bold and conviction-driven. Uses phrases like "I like this name", "this is a broken stock", "buy buy buy" or "sell sell sell". Speaks with strong opinions and urgency.',
+         true, true),
+        ('Josh Brown', 'brown', '📊',
+         'Secular trends over cyclical noise. Focus on price action confirmation and momentum, long-term compounders with durable competitive moats, TAM expansion and market position, relative strength vs peers. Skeptical of management narratives — follows the numbers and the chart.',
+         ARRAY['revenue_growth_trajectory', 'market_position', 'competitive_moat', 'tam_expansion', 'relative_strength', 'price_action', 'secular_trends'],
+         'Measured and data-driven. Skeptical of management spin. Uses phrases like "the stock is telling you something", "follow the trend not the narrative". Focuses on what the market is actually doing.',
+         true, true),
+        ('Stephanie Link', 'link', '🎯',
+         'Deep fundamental analysis. Focus on revenue acceleration/deceleration trajectory, margin expansion or compression stories, relative valuation (P/E vs peers and vs history), management execution track record, free cash flow yield, balance sheet quality, and guidance changes.',
+         ARRAY['revenue_yoy', 'revenue_qoq', 'gross_margin', 'operating_margin', 'net_margin', 'pe_ratio', 'fcf_yield', 'balance_sheet_quality', 'guidance_changes'],
+         'Analytical and numbers-first. Uses phrases like "show me the execution", "the numbers tell the story". Always compares metrics to prior periods and peers. Disciplined fundamental investor.',
+         true, true),
+        ('Bryn Talkington', 'talkington', '⚖️',
+         'Risk/reward discipline. Focus on valuation floors and upside potential, cash flow generation and sustainability, dividend coverage and growth, debt-to-equity and financial health, macro awareness combined with micro stock execution. Thinks about downside protection first.',
+         ARRAY['fcf_yield', 'dividend_coverage', 'debt_to_equity', 'valuation_multiples', 'risk_reward_ratio', 'downside_protection', 'macro_positioning'],
+         'Disciplined and risk-conscious. Uses phrases like "what am I paying for this?", "where is the floor?", "risk/reward is compelling here". Always frames positions in terms of what can go wrong vs right.',
+         true, true)
+      `);
+      console.log('✅ Default analyst personas seeded');
+    }
+
     console.log('✅ Database initialized successfully');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
