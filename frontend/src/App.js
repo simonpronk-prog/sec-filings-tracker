@@ -59,6 +59,8 @@ function App() {
   const [personas, setPersonas] = useState([]);
   const [personasLoading, setPersonasLoading] = useState(false);
   const [personaPreferences, setPersonaPreferences] = useState(null);
+  // Re-analyse loading state: accessionNumber → true while loading
+  const [reanalyzing, setReanalyzing] = useState({});
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -230,6 +232,32 @@ function App() {
     }
   };
 
+  // Re-analyse a filing with fresh AI + pro analysis
+  const reanalyzeFiling = async (accessionNumber, cik) => {
+    setReanalyzing(prev => ({ ...prev, [accessionNumber]: true }));
+    try {
+      const r = await apiFetch(`/api/filings/${accessionNumber}/analyze`, { method: 'POST' });
+      if (r.ok) {
+        const updatedAnalysis = await r.json();
+        // Update the filing in tickerFilings with fresh analysis
+        setTickerFilings(prev => {
+          const filings = prev[cik] || [];
+          return {
+            ...prev,
+            [cik]: filings.map(f =>
+              f.accessionNumber === accessionNumber || f.accession_number === accessionNumber
+                ? { ...f, ...updatedAnalysis, ai_summary: updatedAnalysis.brief_summary || updatedAnalysis.ai_summary }
+                : f
+            )
+          };
+        });
+      }
+    } catch (e) {
+      console.error('Re-analyse error:', e);
+    }
+    setReanalyzing(prev => ({ ...prev, [accessionNumber]: false }));
+  };
+
   // Toggle filing selection
   const toggleFilingSelection = (cik, accessionNumber) => {
     setSelectedFilings(prev => {
@@ -353,6 +381,7 @@ function App() {
             selectedFilings={selectedFilings} toggleFilingSelection={toggleFilingSelection}
             toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead} bulkMarkAsUnread={bulkMarkAsUnread}
             typeFilter={typeFilter} setTypeFilter={setTypeFilter}
+            reanalyzeFiling={reanalyzeFiling} reanalyzing={reanalyzing}
           />
         )}
 
@@ -385,7 +414,7 @@ function isBigInsider(f) {
   return move >= 2 || conf >= 75;
 }
 
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter }) {
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter, reanalyzeFiling, reanalyzing }) {
   return (
     <div>
       {/* Summary cards */}
@@ -611,6 +640,13 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                                 📊 {isFilingExpanded ? 'Hide' : 'Full'} Analysis
                               </button>
                             )}
+                            <button onClick={(e) => { e.stopPropagation(); reanalyzeFiling(f.accessionNumber, t.cik); }}
+                              disabled={reanalyzing[f.accessionNumber]}
+                              style={{ padding: '0.35rem 0.75rem', background: reanalyzing[f.accessionNumber] ? '#e0e0e0' : '#f3e5f5',
+                                color: reanalyzing[f.accessionNumber] ? '#999' : '#7b1fa2', border: '1px solid #ce93d8',
+                                borderRadius: '4px', fontSize: '0.8rem', cursor: reanalyzing[f.accessionNumber] ? 'wait' : 'pointer', fontWeight: '500' }}>
+                              {reanalyzing[f.accessionNumber] ? '⏳ Analysing...' : '🔄 Re-analyse'}
+                            </button>
                           </div>
 
                           {/* Expanded full analysis */}
