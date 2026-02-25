@@ -419,7 +419,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.geminiKey}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.geminiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -427,7 +427,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
             parts: [{ text: prompt }]
           }],
           generationConfig: {
-            maxOutputTokens: 4096
+            maxOutputTokens: 8192
           }
         }),
         signal: controller.signal
