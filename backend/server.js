@@ -1219,79 +1219,78 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
     }
     const ticker = watchCheck.rows[0].ticker;
 
-    // Fetch filing list from SEC EDGAR (cached for 10 min — no repeated calls)
-    const filings = await secEdgar.getCompanyFilings(cik, daysBack);
+    // DB-FIRST: filings are immutable, so always serve from DB.
+    // Only hit SEC EDGAR if we have ZERO filings for this CIK (brand new company).
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysBack);
 
-    // Single batch query: get ALL known filings for this CIK from the DB
-    const accessionNumbers = filings.map(f => f.accessionNumber);
-    const existingResult = await pool.query(
+    const dbResult = await pool.query(
       `SELECT f.*, uf.read
        FROM filings f
        LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
-       WHERE f.accession_number = ANY($2)`,
-      [req.user.id, accessionNumbers]
+       WHERE f.cik = $2 AND f.filed_date >= $3
+       ORDER BY f.filed_date DESC`,
+      [req.user.id, cik, cutoffDate.toISOString().split('T')[0]]
     );
 
-    // Build lookup map: accession_number → DB row
-    const existingMap = {};
-    for (const row of existingResult.rows) {
-      existingMap[row.accession_number] = row;
-    }
+    let enrichedFilings;
 
-    // Enrich filings from DB — NO AI calls, NO SEC EDGAR text fetching
-    const enrichedFilings = filings.map(filing => {
-      const existing = existingMap[filing.accessionNumber];
-      const priority = aiAnalysis.getFilingPriority(filing.formType);
+    if (dbResult.rows.length > 0) {
+      // We have filings in DB — serve directly, no EDGAR call needed
+      console.log(`📦 DB hit for CIK ${cik}: ${dbResult.rows.length} filings`);
 
-      if (existing && existing.ai_summary) {
-        // Has analysis — return fully enriched data from DB
-        return {
-          ...filing, ticker,
-          ai_summary: existing.ai_summary,
-          ai_detailed_summary: existing.ai_detailed_summary,
-          sentiment_direction: existing.sentiment_direction,
-          expected_move_min: existing.expected_move_min,
-          expected_move_max: existing.expected_move_max,
-          expected_move_avg: existing.expected_move_avg,
-          confidence_score: existing.confidence_score,
-          bullish_factors: existing.bullish_factors,
-          bearish_factors: existing.bearish_factors,
-          ai_consensus: existing.ai_consensus,
-          short_interest_percent: existing.short_interest_percent,
-          numbers_confidence: existing.numbers_confidence,
-          pro_analysis: existing.pro_analysis,
-          read: existing.read || false,
-          priority
-        };
-      }
-
-      // No analysis — return basic filing data (user can Re-analyse)
-      return {
-        ...filing, ticker,
-        read: existing?.read || false,
-        priority
-      };
-    });
-
-    // Batch ensure user_filings links exist for known DB filings
-    const existingIds = existingResult.rows.map(r => r.id);
-    if (existingIds.length > 0) {
+      // Batch ensure user_filings links exist
+      const ids = dbResult.rows.map(r => r.id);
       await pool.query(
         `INSERT INTO user_filings (user_id, filing_id, read)
          SELECT $1, unnest($2::int[]), false
          ON CONFLICT (user_id, filing_id) DO NOTHING`,
-        [req.user.id, existingIds]
+        [req.user.id, ids]
       );
-    }
 
-    // Insert basic DB records for NEW filings (no analysis, just metadata)
-    const newFilings = filings.filter(f => !existingMap[f.accessionNumber]);
-    for (const filing of newFilings) {
-      try {
-        await ensureFilingAndLink(req.user.id, filing);
-      } catch (e) {
-        // Non-critical — filing will be linked on next visit
+      enrichedFilings = dbResult.rows.map(row => ({
+        cik: row.cik,
+        company: row.company,
+        formType: row.form_type,
+        filedDate: row.filed_date,
+        accessionNumber: row.accession_number,
+        description: row.description,
+        primaryDocument: row.primary_document,
+        reportDate: row.report_date,
+        ticker,
+        ai_summary: row.ai_summary,
+        ai_detailed_summary: row.ai_detailed_summary,
+        sentiment_direction: row.sentiment_direction,
+        expected_move_min: row.expected_move_min,
+        expected_move_max: row.expected_move_max,
+        expected_move_avg: row.expected_move_avg,
+        confidence_score: row.confidence_score,
+        bullish_factors: row.bullish_factors,
+        bearish_factors: row.bearish_factors,
+        ai_consensus: row.ai_consensus,
+        short_interest_percent: row.short_interest_percent,
+        numbers_confidence: row.numbers_confidence,
+        pro_analysis: row.pro_analysis,
+        read: row.read || false,
+        priority: aiAnalysis.getFilingPriority(row.form_type)
+      }));
+    } else {
+      // No filings in DB for this CIK — first time, fetch from EDGAR to bootstrap
+      console.log(`📡 No DB filings for CIK ${cik}, fetching from EDGAR...`);
+      const filings = await secEdgar.getCompanyFilings(cik, daysBack);
+
+      // Insert basic records into DB (metadata only, no AI)
+      for (const filing of filings) {
+        try {
+          await ensureFilingAndLink(req.user.id, filing);
+        } catch (e) { /* non-critical */ }
       }
+
+      enrichedFilings = filings.map(filing => ({
+        ...filing, ticker,
+        read: false,
+        priority: aiAnalysis.getFilingPriority(filing.formType)
+      }));
     }
 
     res.json(enrichedFilings);
