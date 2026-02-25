@@ -358,6 +358,10 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
 
     try {
       const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
+      console.log(`📤 Claude: sending ${prompt.length} char prompt...`);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -373,24 +377,30 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
             role: 'user',
             content: prompt
           }]
-        })
+        }),
+        signal: controller.signal
       });
 
+      clearTimeout(timeout);
+
       if (!response.ok) {
-        throw new Error(`Claude API error: ${response.status}`);
+        const errBody = await response.text().catch(() => '');
+        throw new Error(`Claude API error: ${response.status} ${errBody.substring(0, 200)}`);
       }
 
       const data = await response.json();
       const text = data.content[0].text;
+      console.log(`📥 Claude: received ${text.length} chars`);
 
       const analysis = this.extractJSON(text);
+      console.log(`✅ Claude: parsed JSON, pro_analysis: ${!!analysis.pro_analysis}`);
 
       return {
         provider: 'claude',
         ...analysis
       };
     } catch (error) {
-      console.error('Claude analysis error:', error);
+      console.error('Claude analysis error:', error.message || error);
       return null;
     }
   }
@@ -404,6 +414,10 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
 
     try {
       const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
+      console.log(`📤 Gemini: sending ${prompt.length} char prompt...`);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.geminiKey}`, {
         method: 'POST',
@@ -415,24 +429,30 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
           generationConfig: {
             maxOutputTokens: 4096
           }
-        })
+        }),
+        signal: controller.signal
       });
 
+      clearTimeout(timeout);
+
       if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status}`);
+        const errBody = await response.text().catch(() => '');
+        throw new Error(`Gemini API error: ${response.status} ${errBody.substring(0, 200)}`);
       }
 
       const data = await response.json();
       const text = data.candidates[0].content.parts[0].text;
+      console.log(`📥 Gemini: received ${text.length} chars`);
 
       const analysis = this.extractJSON(text);
+      console.log(`✅ Gemini: parsed JSON, pro_analysis: ${!!analysis.pro_analysis}`);
 
       return {
         provider: 'gemini',
         ...analysis
       };
     } catch (error) {
-      console.error('Gemini analysis error:', error);
+      console.error('Gemini analysis error:', error.message || error);
       return null;
     }
   }
@@ -446,6 +466,10 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
 
     try {
       const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
+      console.log(`📤 Grok: sending ${prompt.length} char prompt...`);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
       const response = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
@@ -460,26 +484,30 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
             role: 'user',
             content: prompt
           }]
-        })
+        }),
+        signal: controller.signal
       });
+
+      clearTimeout(timeout);
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => '');
-        console.error(`Grok API error body: ${errorBody}`);
-        throw new Error(`Grok API error: ${response.status}`);
+        throw new Error(`Grok API error: ${response.status} ${errorBody.substring(0, 200)}`);
       }
 
       const data = await response.json();
       const text = data.choices[0].message.content;
+      console.log(`📥 Grok: received ${text.length} chars`);
 
       const analysis = this.extractJSON(text);
+      console.log(`✅ Grok: parsed JSON, pro_analysis: ${!!analysis.pro_analysis}`);
 
       return {
         provider: 'grok',
         ...analysis
       };
     } catch (error) {
-      console.error('Grok analysis error:', error);
+      console.error('Grok analysis error:', error.message || error);
       return null;
     }
   }

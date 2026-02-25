@@ -61,6 +61,8 @@ function App() {
   const [personaPreferences, setPersonaPreferences] = useState(null);
   // Re-analyse loading state: accessionNumber → true while loading
   const [reanalyzing, setReanalyzing] = useState({});
+  // Re-analyse error state: accessionNumber → error message
+  const [reanalyzeError, setReanalyzeError] = useState({});
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -235,10 +237,13 @@ function App() {
   // Re-analyse a filing with fresh AI + pro analysis
   const reanalyzeFiling = async (accessionNumber, cik) => {
     setReanalyzing(prev => ({ ...prev, [accessionNumber]: true }));
+    setReanalyzeError(prev => ({ ...prev, [accessionNumber]: null }));
     try {
-      const r = await apiFetch(`/api/filings/${accessionNumber}/analyze`, { method: 'POST' });
+      console.log(`🔄 Re-analysing ${accessionNumber} (cik: ${cik})`);
+      const r = await apiFetch(`/api/filings/${encodeURIComponent(accessionNumber)}/analyze`, { method: 'POST' });
       if (r.ok) {
         const updatedAnalysis = await r.json();
+        console.log('✅ Re-analysis response:', Object.keys(updatedAnalysis), 'pro_analysis:', !!updatedAnalysis.pro_analysis);
         // Update the filing in tickerFilings with fresh analysis
         setTickerFilings(prev => {
           const filings = prev[cik] || [];
@@ -251,9 +256,14 @@ function App() {
             )
           };
         });
+      } else {
+        const errBody = await r.text().catch(() => 'Unknown error');
+        console.error(`❌ Re-analyse failed (${r.status}):`, errBody);
+        setReanalyzeError(prev => ({ ...prev, [accessionNumber]: `Analysis failed (${r.status}). Check server logs.` }));
       }
     } catch (e) {
       console.error('Re-analyse error:', e);
+      setReanalyzeError(prev => ({ ...prev, [accessionNumber]: `Network error: ${e.message}` }));
     }
     setReanalyzing(prev => ({ ...prev, [accessionNumber]: false }));
   };
@@ -381,7 +391,7 @@ function App() {
             selectedFilings={selectedFilings} toggleFilingSelection={toggleFilingSelection}
             toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead} bulkMarkAsUnread={bulkMarkAsUnread}
             typeFilter={typeFilter} setTypeFilter={setTypeFilter}
-            reanalyzeFiling={reanalyzeFiling} reanalyzing={reanalyzing}
+            reanalyzeFiling={reanalyzeFiling} reanalyzing={reanalyzing} reanalyzeError={reanalyzeError}
           />
         )}
 
@@ -414,7 +424,7 @@ function isBigInsider(f) {
   return move >= 2 || conf >= 75;
 }
 
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter, reanalyzeFiling, reanalyzing }) {
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter, reanalyzeFiling, reanalyzing, reanalyzeError }) {
   return (
     <div>
       {/* Summary cards */}
@@ -648,6 +658,11 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                               {reanalyzing[f.accessionNumber] ? '⏳ Analysing...' : '🔄 Re-analyse'}
                             </button>
                           </div>
+                          {reanalyzeError?.[f.accessionNumber] && (
+                            <div style={{ margin: '0.5rem 0 0 1.5rem', padding: '0.5rem 0.75rem', background: '#fff5f5', border: '1px solid #fed7d7', borderRadius: '4px', color: '#c53030', fontSize: '0.8rem' }}>
+                              {reanalyzeError[f.accessionNumber]}
+                            </div>
+                          )}
 
                           {/* Expanded full analysis */}
                           {isFilingExpanded && has && (() => {

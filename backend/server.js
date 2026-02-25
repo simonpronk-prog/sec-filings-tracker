@@ -762,11 +762,23 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     const personaPreferences = userPrefs.rows[0]?.persona_preferences || null;
 
     // Fetch filing text
-    const filingText = await secEdgar.parseFilingContent(
-      filing.accession_number,
-      filing.cik,
-      filing.primary_document
-    );
+    let filingText;
+    try {
+      filingText = await secEdgar.parseFilingContent(
+        filing.accession_number,
+        filing.cik,
+        filing.primary_document
+      );
+      console.log(`📄 Filing text fetched: ${filingText ? filingText.length : 0} chars`);
+    } catch (fetchErr) {
+      console.error('❌ Failed to fetch filing text:', fetchErr.message);
+      return res.status(500).json({ error: `Failed to fetch filing text: ${fetchErr.message}` });
+    }
+
+    if (!filingText || filingText.length < 100) {
+      console.error('❌ Filing text too short or empty:', filingText?.length || 0);
+      return res.status(500).json({ error: `Filing text too short (${filingText?.length || 0} chars). May not be available from SEC.` });
+    }
 
     // Get fresh AI analysis
     const analysis = await aiAnalysis.analyzeFiling(
@@ -779,8 +791,11 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     );
 
     if (!analysis) {
-      return res.status(500).json({ error: 'Failed to generate analysis' });
+      console.error('❌ All AI providers failed to produce analysis');
+      return res.status(500).json({ error: 'All AI providers failed to generate analysis. Check API keys and logs.' });
     }
+
+    console.log(`✅ Analysis complete. pro_analysis: ${!!analysis.pro_analysis}, providers: ${analysis.providers?.join(', ') || analysis.provider || 'unknown'}`);
 
     // Get fresh short interest data
     const shortData = await shortInterest.getShortInterest(filing.ticker);
@@ -828,7 +843,7 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
     });
   } catch (error) {
     console.error('Regenerate analysis error:', error);
-    res.status(500).json({ error: 'Error regenerating analysis' });
+    res.status(500).json({ error: `Error regenerating analysis: ${error.message}` });
   }
 });
 
