@@ -905,13 +905,13 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
   const models = [
     { key: 'claude', name: 'Anthropic Claude Sonnet 4', desc: 'Nuanced insights and detailed reasoning.', cost: '~$0.018/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'grok', name: 'xAI Grok 3', desc: 'Fast analysis with trading focus.', cost: '~$0.001/filing', badge: 'PAID', badgeColor: '#ffc107' },
-    { key: 'gemini', name: 'Google Gemini 1.5 Pro', desc: 'Fast and accurate financial analysis.', cost: 'Free tier available', badge: 'FREE', badgeColor: '#28a745' },
+    { key: 'gemini', name: 'Google Gemini 2.0 Flash', desc: 'Fast and accurate financial analysis.', cost: 'Free tier available', badge: 'FREE', badgeColor: '#28a745' },
   ];
 
-  // Check if a persona is active for this user
+  // Check if a persona is active for this user (opt-in model — none by default)
   const isPersonaActive = (shortName) => {
-    if (!personaPreferences) return true; // null = all active by default
-    return personaPreferences[shortName] !== false;
+    if (!personaPreferences) return false; // null = none active, user opts in
+    return personaPreferences[shortName] === true;
   };
 
   const resetForm = () => {
@@ -1017,8 +1017,8 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
           </button>
         </div>
         <p style={{ color: '#666', fontSize: '0.85rem', marginTop: 0, marginBottom: '1rem' }}>
-          Each analyst brings their own framework and style. Toggle them on/off for your analyses — this only affects your account.
-          New analysts you create are available to all users.
+          Pick analysts from the shared repository to include in your analysis. Each brings their own framework and perspective.
+          Analysts are optional — choose as many or as few as you like. New analysts you create are available to all users.
         </p>
 
         {/* Persona cards */}

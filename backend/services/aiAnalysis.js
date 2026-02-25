@@ -212,15 +212,16 @@ Extract any financial metrics, dates, or material facts present.`
         'SELECT name, short_name, emoji, framework, key_metrics, style FROM analyst_personas WHERE enabled = true ORDER BY is_default DESC, created_at ASC'
       );
 
-      let personas = result.rows;
+      const allPersonas = result.rows;
 
-      // If user has persona preferences, filter to only their selected ones
+      // Opt-in model: users explicitly select which analysts they want
       if (userPersonaPrefs && typeof userPersonaPrefs === 'object') {
-        personas = personas.filter(p => userPersonaPrefs[p.short_name] !== false);
+        // Only include personas the user explicitly opted into
+        return allPersonas.filter(p => userPersonaPrefs[p.short_name] === true);
       }
-      // If userPersonaPrefs is null, all globally enabled personas are included (default)
 
-      return personas;
+      // No preferences set = no personas (user hasn't chosen any yet)
+      return [];
     } catch (error) {
       console.error('Error loading personas:', error);
       return [];
