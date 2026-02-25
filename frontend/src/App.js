@@ -257,9 +257,16 @@ function App() {
           };
         });
       } else {
-        const errBody = await r.text().catch(() => 'Unknown error');
+        const errBody = await r.text().catch(() => '');
         console.error(`❌ Re-analyse failed (${r.status}):`, errBody);
-        setReanalyzeError(prev => ({ ...prev, [accessionNumber]: `Analysis failed (${r.status}). Check server logs.` }));
+        let errMsg = `Analysis failed (${r.status})`;
+        try {
+          const errJson = JSON.parse(errBody);
+          if (errJson.error) errMsg = errJson.error;
+        } catch (_) {
+          if (errBody) errMsg += `: ${errBody.substring(0, 200)}`;
+        }
+        setReanalyzeError(prev => ({ ...prev, [accessionNumber]: errMsg }));
       }
     } catch (e) {
       console.error('Re-analyse error:', e);
