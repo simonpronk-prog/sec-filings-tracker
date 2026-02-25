@@ -401,7 +401,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       };
     } catch (error) {
       console.error('Claude analysis error:', error.message || error);
-      return null;
+      return { _failed: true, provider: 'claude', error: error.message };
     }
   }
 
@@ -453,7 +453,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       };
     } catch (error) {
       console.error('Gemini analysis error:', error.message || error);
-      return null;
+      return { _failed: true, provider: 'gemini', error: error.message };
     }
   }
 
@@ -508,7 +508,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       };
     } catch (error) {
       console.error('Grok analysis error:', error.message || error);
-      return null;
+      return { _failed: true, provider: 'grok', error: error.message };
     }
   }
 
@@ -527,11 +527,16 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       prefs.grok ? this.analyzeWithGrok(filingText, company, formType, personaPreferences) : null
     ]);
 
-    const validAnalyses = analyses.filter(a => a !== null);
+    const validAnalyses = analyses.filter(a => a !== null && !a._failed);
+    const failedAnalyses = analyses.filter(a => a?._failed);
 
     if (validAnalyses.length === 0) {
-      console.log('❌ No AI analyses completed successfully');
-      return null;
+      const errorDetails = failedAnalyses.map(f => `${f.provider}: ${f.error}`).join('; ');
+      console.log(`❌ No AI analyses completed successfully. Errors: ${errorDetails}`);
+      // Attach errors so the caller can include them in the response
+      const err = new Error(`All AI providers failed — ${errorDetails}`);
+      err.providerErrors = failedAnalyses;
+      throw err;
     }
 
     console.log(`✅ Completed ${validAnalyses.length} AI analysis(es)`);
