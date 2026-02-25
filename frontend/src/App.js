@@ -58,6 +58,7 @@ function App() {
   // Analyst personas
   const [personas, setPersonas] = useState([]);
   const [personasLoading, setPersonasLoading] = useState(false);
+  const [personaPreferences, setPersonaPreferences] = useState(null);
 
   const apiFetch = async (path, options = {}) => {
     const token = localStorage.getItem('sec_token');
@@ -269,7 +270,7 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      (async () => { try { const r = await apiFetch('/api/preferences'); const d = await r.json(); if (d.ai_preferences) setAiPreferences(d.ai_preferences); } catch {} })();
+      (async () => { try { const r = await apiFetch('/api/preferences'); const d = await r.json(); if (d.ai_preferences) setAiPreferences(d.ai_preferences); if (d.persona_preferences) setPersonaPreferences(d.persona_preferences); } catch {} })();
     }
   }, [isAuthenticated]);
 
@@ -363,6 +364,7 @@ function App() {
         {activeTab === 'settings' && (<Settings
           aiPreferences={aiPreferences} saving={settingsSaving} onSave={saveAiPreferences}
           personas={personas} onPersonasChange={loadPersonas} apiFetch={apiFetch}
+          personaPreferences={personaPreferences} setPersonaPreferences={setPersonaPreferences}
         />)}
       </div>
     </div>
@@ -836,7 +838,7 @@ function Watchlist({ watchlist, searchQuery, setSearchQuery, searchResults, onAd
 // ============================================
 // SETTINGS COMPONENT
 // ============================================
-function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, apiFetch }) {
+function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, apiFetch, personaPreferences, setPersonaPreferences }) {
   const [showAddPersona, setShowAddPersona] = useState(false);
   const [editingPersona, setEditingPersona] = useState(null);
   const [personaForm, setPersonaForm] = useState({ name: '', short_name: '', emoji: '', framework: '', key_metrics: '', style: '' });
@@ -847,6 +849,12 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
     { key: 'grok', name: 'xAI Grok 3', desc: 'Fast analysis with trading focus.', cost: '~$0.001/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'gemini', name: 'Google Gemini 1.5 Pro', desc: 'Fast and accurate financial analysis.', cost: 'Free tier available', badge: 'FREE', badgeColor: '#28a745' },
   ];
+
+  // Check if a persona is active for this user
+  const isPersonaActive = (shortName) => {
+    if (!personaPreferences) return true; // null = all active by default
+    return personaPreferences[shortName] !== false;
+  };
 
   const resetForm = () => {
     setPersonaForm({ name: '', short_name: '', emoji: '', framework: '', key_metrics: '', style: '' });
@@ -867,7 +875,12 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
       if (editingPersona) {
         await apiFetch(`/api/personas/${editingPersona}`, { method: 'PUT', body: JSON.stringify(body) });
       } else {
+        // Create persona globally, then auto-enable for this user
         await apiFetch('/api/personas', { method: 'POST', body: JSON.stringify(body) });
+        const shortName = body.short_name || personaForm.short_name.toLowerCase().replace(/\s+/g, '_');
+        const newPrefs = { ...(personaPreferences || {}), [shortName]: true };
+        await apiFetch('/api/preferences', { method: 'PUT', body: JSON.stringify({ personaPreferences: newPrefs }) });
+        setPersonaPreferences(newPrefs);
       }
       resetForm();
       onPersonasChange();
@@ -875,19 +888,14 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
     finally { setPersonaSaving(false); }
   };
 
-  const togglePersona = async (id, enabled) => {
+  // Toggle persona for THIS USER (saves to user's persona_preferences, not global)
+  const togglePersona = async (shortName, currentlyActive) => {
     try {
-      await apiFetch(`/api/personas/${id}`, { method: 'PUT', body: JSON.stringify({ enabled: !enabled }) });
-      onPersonasChange();
+      const newPrefs = { ...(personaPreferences || {}) };
+      newPrefs[shortName] = !currentlyActive;
+      await apiFetch('/api/preferences', { method: 'PUT', body: JSON.stringify({ personaPreferences: newPrefs }) });
+      setPersonaPreferences(newPrefs);
     } catch (e) { console.error('Toggle persona error:', e); }
-  };
-
-  const deletePersona = async (id) => {
-    if (!window.confirm('Delete this analyst persona?')) return;
-    try {
-      await apiFetch(`/api/personas/${id}`, { method: 'DELETE' });
-      onPersonasChange();
-    } catch (e) { console.error('Delete persona error:', e); }
   };
 
   const startEdit = (p) => {
@@ -951,52 +959,48 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
           </button>
         </div>
         <p style={{ color: '#666', fontSize: '0.85rem', marginTop: 0, marginBottom: '1rem' }}>
-          These analysts influence how AI interprets SEC filings. Each persona brings their own analytical framework and communication style.
-          Disable a persona to exclude their take from future analyses.
+          Each analyst brings their own framework and style. Toggle them on/off for your analyses — this only affects your account.
+          New analysts you create are available to all users.
         </p>
 
         {/* Persona cards */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-          {personas.map(p => (
-            <div key={p.id} style={{
-              padding: '1rem', borderRadius: '8px',
-              border: p.enabled ? '2px solid #667eea' : '2px solid #ddd',
-              background: p.enabled ? '#f8f9ff' : '#fafafa',
-              opacity: p.enabled ? 1 : 0.6,
-              transition: 'all 0.2s'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ fontWeight: '700', fontSize: '1rem' }}>{p.emoji} {p.name}</div>
-                  <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.1rem' }}>{p.short_name}</div>
-                </div>
-                <div style={{ display: 'flex', gap: '0.25rem' }}>
-                  <button onClick={() => togglePersona(p.id, p.enabled)}
-                    style={{ padding: '0.25rem 0.5rem', background: p.enabled ? '#e8f5e9' : '#fff3e0', color: p.enabled ? '#2e7d32' : '#e65100',
-                      border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '500' }}>
-                    {p.enabled ? 'On' : 'Off'}
-                  </button>
-                  <button onClick={() => startEdit(p)}
-                    style={{ padding: '0.25rem 0.5rem', background: '#e3f2fd', color: '#1565c0', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
-                    Edit
-                  </button>
-                  {!p.is_default && (
-                    <button onClick={() => deletePersona(p.id)}
-                      style={{ padding: '0.25rem 0.5rem', background: '#ffebee', color: '#c62828', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
-                      Delete
+          {personas.map(p => {
+            const active = isPersonaActive(p.short_name);
+            return (
+              <div key={p.id} style={{
+                padding: '1rem', borderRadius: '8px',
+                border: active ? '2px solid #667eea' : '2px solid #ddd',
+                background: active ? '#f8f9ff' : '#fafafa',
+                opacity: active ? 1 : 0.6,
+                transition: 'all 0.2s'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontWeight: '700', fontSize: '1rem' }}>{p.emoji} {p.name}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.1rem' }}>{p.short_name}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    <button onClick={() => togglePersona(p.short_name, active)}
+                      style={{ padding: '0.25rem 0.5rem', background: active ? '#e8f5e9' : '#fff3e0', color: active ? '#2e7d32' : '#e65100',
+                        border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '500' }}>
+                      {active ? 'On' : 'Off'}
                     </button>
-                  )}
+                    <button onClick={() => startEdit(p)}
+                      style={{ padding: '0.25rem 0.5rem', background: '#e3f2fd', color: '#1565c0', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                      Edit
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.5rem', lineHeight: '1.4' }}>
+                  <strong>Framework:</strong> {p.framework.length > 120 ? p.framework.substring(0, 120) + '...' : p.framework}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.25rem' }}>
+                  <strong>Style:</strong> {p.style.length > 80 ? p.style.substring(0, 80) + '...' : p.style}
                 </div>
               </div>
-              <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.5rem', lineHeight: '1.4' }}>
-                <strong>Framework:</strong> {p.framework.length > 120 ? p.framework.substring(0, 120) + '...' : p.framework}
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#555', marginTop: '0.25rem' }}>
-                <strong>Style:</strong> {p.style.length > 80 ? p.style.substring(0, 80) + '...' : p.style}
-              </div>
-              {p.is_default && <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '0.35rem' }}>Default analyst — cannot be deleted</div>}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Add/Edit Persona Form */}

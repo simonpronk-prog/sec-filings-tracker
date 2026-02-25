@@ -441,12 +441,13 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
     const daysBack = parseInt(req.query.daysBack) || 7;
     console.log('📋 Fetching filings for user:', req.user.id, 'looking back', daysBack, 'days');
 
-    // Get user's AI preferences
+    // Get user's AI + persona preferences
     const userPrefs = await pool.query(
-      'SELECT ai_preferences FROM users WHERE id = $1',
+      'SELECT ai_preferences, persona_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
+    const personaPreferences = userPrefs.rows[0]?.persona_preferences || null;
     console.log('🎯 User AI preferences:', aiPreferences);
 
     const watchlist = await pool.query(
@@ -545,7 +546,8 @@ app.get('/api/sec/filings', authenticateToken, async (req, res) => {
             filing.company,
             filing.formType,
             ticker,
-            aiPreferences
+            aiPreferences,
+            personaPreferences
           );
 
           if (analysis) {
@@ -751,12 +753,13 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
 
     console.log(`🔄 Regenerating analysis for ${filing.form_type} - ${filing.company}...`);
 
-    // Get user's AI preferences
+    // Get user's AI + persona preferences
     const userPrefs = await pool.query(
-      'SELECT ai_preferences FROM users WHERE id = $1',
+      'SELECT ai_preferences, persona_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
+    const personaPreferences = userPrefs.rows[0]?.persona_preferences || null;
 
     // Fetch filing text
     const filingText = await secEdgar.parseFilingContent(
@@ -771,7 +774,8 @@ app.post('/api/filings/:accessionNumber/analyze', authenticateToken, async (req,
       filing.company,
       filing.form_type,
       filing.ticker,
-      aiPreferences
+      aiPreferences,
+      personaPreferences
     );
 
     if (!analysis) {
@@ -947,7 +951,7 @@ app.delete('/api/personas/:id', authenticateToken, async (req, res) => {
 app.get('/api/preferences', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT notification_preferences, notifications_enabled, phone, ai_preferences FROM users WHERE id = $1',
+      'SELECT notification_preferences, notifications_enabled, phone, ai_preferences, persona_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
     res.json(result.rows[0] || {});
@@ -960,13 +964,14 @@ app.get('/api/preferences', authenticateToken, async (req, res) => {
 // Update notification preferences
 app.put('/api/preferences', authenticateToken, async (req, res) => {
   try {
-    const { notificationPreferences, notificationsEnabled, phone, aiPreferences } = req.body;
+    const { notificationPreferences, notificationsEnabled, phone, aiPreferences, personaPreferences } = req.body;
 
     await pool.query(
-      `UPDATE users 
-       SET notification_preferences = $1, notifications_enabled = $2, phone = $3, ai_preferences = $4
-       WHERE id = $5`,
-      [JSON.stringify(notificationPreferences), notificationsEnabled, phone, JSON.stringify(aiPreferences), req.user.id]
+      `UPDATE users
+       SET notification_preferences = $1, notifications_enabled = $2, phone = $3, ai_preferences = $4, persona_preferences = $5
+       WHERE id = $6`,
+      [JSON.stringify(notificationPreferences), notificationsEnabled, phone, JSON.stringify(aiPreferences),
+       personaPreferences ? JSON.stringify(personaPreferences) : null, req.user.id]
     );
 
     res.json({ message: 'Preferences updated' });
@@ -1199,12 +1204,13 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
     }
     const ticker = watchCheck.rows[0].ticker;
 
-    // Get user's AI preferences
+    // Get user's AI + persona preferences
     const userPrefs = await pool.query(
-      'SELECT ai_preferences FROM users WHERE id = $1',
+      'SELECT ai_preferences, persona_preferences FROM users WHERE id = $1',
       [req.user.id]
     );
     const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
+    const personaPreferences = userPrefs.rows[0]?.persona_preferences || null;
 
     // Fetch filings from SEC EDGAR for this single CIK
     const filings = await secEdgar.getCompanyFilings(cik, daysBack);
@@ -1270,7 +1276,7 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
           );
 
           const analysis = await aiAnalysis.analyzeFiling(
-            filingText, filing.company, filing.formType, ticker, aiPreferences
+            filingText, filing.company, filing.formType, ticker, aiPreferences, personaPreferences
           );
 
           if (analysis) {
@@ -1469,6 +1475,12 @@ async function initDatabase() {
       -- Add pro_analysis column if it doesn't exist
       DO $$ BEGIN
         ALTER TABLE filings ADD COLUMN IF NOT EXISTS pro_analysis JSONB DEFAULT NULL;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END $$;
+
+      -- Add persona_preferences column to users for per-user persona selection
+      DO $$ BEGIN
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS persona_preferences JSONB DEFAULT NULL;
       EXCEPTION WHEN OTHERS THEN NULL;
       END $$;
     `);

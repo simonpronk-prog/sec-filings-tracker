@@ -199,18 +199,28 @@ Extract any financial metrics, dates, or material facts present.`
     return templates[analysisType] || templates.other;
   }
 
-  // Load enabled personas from database
-  async loadPersonas() {
+  // Load personas from database, filtered by user preferences
+  async loadPersonas(userPersonaPrefs = null) {
     if (!this.pool) {
       console.log('⚠️ No database pool set, using empty personas');
       return [];
     }
 
     try {
+      // Get all globally enabled personas
       const result = await this.pool.query(
         'SELECT name, short_name, emoji, framework, key_metrics, style FROM analyst_personas WHERE enabled = true ORDER BY is_default DESC, created_at ASC'
       );
-      return result.rows;
+
+      let personas = result.rows;
+
+      // If user has persona preferences, filter to only their selected ones
+      if (userPersonaPrefs && typeof userPersonaPrefs === 'object') {
+        personas = personas.filter(p => userPersonaPrefs[p.short_name] !== false);
+      }
+      // If userPersonaPrefs is null, all globally enabled personas are included (default)
+
+      return personas;
     } catch (error) {
       console.error('Error loading personas:', error);
       return [];
@@ -218,14 +228,14 @@ Extract any financial metrics, dates, or material facts present.`
   }
 
   // Build the persona-driven prompt for all AI providers
-  async buildPrompt(filingText, company, formType) {
+  async buildPrompt(filingText, company, formType, userPersonaPrefs = null) {
     const today = new Date().toISOString().split('T')[0];
     const analysisType = this.getAnalysisType(formType);
     const filingInstructions = this.getFilingTypeInstructions(formType);
     const kpiTemplate = this.getKpiTemplate(formType);
 
-    // Load personas from DB
-    const personas = await this.loadPersonas();
+    // Load personas from DB, filtered by user preferences
+    const personas = await this.loadPersonas(userPersonaPrefs);
 
     // Build persona section
     let personaSection = '';
@@ -340,14 +350,14 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
   }
 
   // Analyze filing with Claude (Anthropic)
-  async analyzeWithClaude(filingText, company, formType) {
+  async analyzeWithClaude(filingText, company, formType, userPersonaPrefs) {
     if (!this.anthropicKey) {
       console.log('⚠️ No Anthropic API key configured');
       return null;
     }
 
     try {
-      const prompt = await this.buildPrompt(filingText, company, formType);
+      const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -386,14 +396,14 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
   }
 
   // Analyze filing with Gemini (Google)
-  async analyzeWithGemini(filingText, company, formType) {
+  async analyzeWithGemini(filingText, company, formType, userPersonaPrefs) {
     if (!this.geminiKey) {
       console.log('⚠️ No Gemini API key configured');
       return null;
     }
 
     try {
-      const prompt = await this.buildPrompt(filingText, company, formType);
+      const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.geminiKey}`, {
         method: 'POST',
@@ -428,14 +438,14 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
   }
 
   // Analyze filing with Grok (xAI)
-  async analyzeWithGrok(filingText, company, formType) {
+  async analyzeWithGrok(filingText, company, formType, userPersonaPrefs) {
     if (!this.grokKey) {
       console.log('⚠️ No Grok API key configured');
       return null;
     }
 
     try {
-      const prompt = await this.buildPrompt(filingText, company, formType);
+      const prompt = await this.buildPrompt(filingText, company, formType, userPersonaPrefs);
 
       const response = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
@@ -475,7 +485,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
   }
 
   // Main method to analyze a filing with multiple AIs
-  async analyzeFiling(filingText, company, formType, ticker, aiPreferences = null) {
+  async analyzeFiling(filingText, company, formType, ticker, aiPreferences = null, personaPreferences = null) {
     console.log(`🤖 Analyzing ${formType} filing for ${company}...`);
 
     // Default to all AIs if no preferences provided
@@ -484,9 +494,9 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
 
     // Run selected AI analyses in parallel
     const analyses = await Promise.all([
-      prefs.claude ? this.analyzeWithClaude(filingText, company, formType) : null,
-      prefs.gemini ? this.analyzeWithGemini(filingText, company, formType) : null,
-      prefs.grok ? this.analyzeWithGrok(filingText, company, formType) : null
+      prefs.claude ? this.analyzeWithClaude(filingText, company, formType, personaPreferences) : null,
+      prefs.gemini ? this.analyzeWithGemini(filingText, company, formType, personaPreferences) : null,
+      prefs.grok ? this.analyzeWithGrok(filingText, company, formType, personaPreferences) : null
     ]);
 
     const validAnalyses = analyses.filter(a => a !== null);
