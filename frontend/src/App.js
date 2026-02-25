@@ -903,7 +903,7 @@ function Settings({ aiPreferences, saving, onSave, personas, onPersonasChange, a
   const [personaSaving, setPersonaSaving] = useState(false);
 
   const models = [
-    { key: 'claude', name: 'Anthropic Claude 3 Haiku', desc: 'Fast, lightweight analysis.', cost: '~$0.001/filing', badge: 'PAID', badgeColor: '#ffc107' },
+    { key: 'claude', name: 'Anthropic Claude Sonnet 4', desc: 'Nuanced insights and detailed reasoning.', cost: '~$0.018/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'grok', name: 'xAI Grok 3', desc: 'Fast analysis with trading focus.', cost: '~$0.001/filing', badge: 'PAID', badgeColor: '#ffc107' },
     { key: 'gemini', name: 'Google Gemini 2.0 Flash', desc: 'Fast and accurate financial analysis.', cost: 'Free tier available', badge: 'FREE', badgeColor: '#28a745' },
   ];
