@@ -6,6 +6,28 @@ class SECEdgarService {
     this.baseUrl = 'https://www.sec.gov';
     this.edgarUrl = 'https://data.sec.gov';
     this.userAgent = 'SEC Filings Tracker support@secfilings.com';
+    this._cache = new Map();
+    this.CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+  }
+
+  getCached(key) {
+    const entry = this._cache.get(key);
+    if (entry && Date.now() - entry.ts < this.CACHE_TTL) {
+      return entry.data;
+    }
+    this._cache.delete(key);
+    return null;
+  }
+
+  setCache(key, data) {
+    this._cache.set(key, { data, ts: Date.now() });
+    // Prune old entries occasionally
+    if (this._cache.size > 100) {
+      const now = Date.now();
+      for (const [k, v] of this._cache) {
+        if (now - v.ts > this.CACHE_TTL) this._cache.delete(k);
+      }
+    }
   }
 
   // Search for companies
@@ -42,12 +64,19 @@ class SECEdgarService {
     }
   }
 
-  // Get recent filings for a CIK
+  // Get recent filings for a CIK (cached for 10 minutes)
   async getCompanyFilings(cik, daysBack = 7) {
     try {
       const paddedCik = String(cik).replace(/^0+/, '').padStart(10, '0');
+      const cacheKey = `filings_${paddedCik}_${daysBack}`;
+      const cached = this.getCached(cacheKey);
+      if (cached) {
+        console.log(`📦 Cache hit for ${paddedCik} (${cached.length} filings)`);
+        return cached;
+      }
+
       const url = `${this.edgarUrl}/submissions/CIK${paddedCik}.json`;
-      
+
       console.log(`📡 Fetching from: ${url}`);
       
       const response = await fetch(url, {
@@ -95,6 +124,7 @@ class SECEdgarService {
       }
 
       console.log(`✅ Returning ${filings.length} filings after date filter`);
+      this.setCache(cacheKey, filings);
       return filings;
     } catch (error) {
       console.error('Error fetching filings:', error);

@@ -1219,138 +1219,78 @@ app.get('/api/sec/filings/:cik', authenticateToken, async (req, res) => {
     }
     const ticker = watchCheck.rows[0].ticker;
 
-    // Get user's AI + persona preferences
-    const userPrefs = await pool.query(
-      'SELECT ai_preferences, persona_preferences FROM users WHERE id = $1',
-      [req.user.id]
-    );
-    const aiPreferences = userPrefs.rows[0]?.ai_preferences || { claude: true, gemini: true, grok: true };
-    const personaPreferences = userPrefs.rows[0]?.persona_preferences || null;
-
-    // Fetch filings from SEC EDGAR for this single CIK
+    // Fetch filing list from SEC EDGAR (cached for 10 min — no repeated calls)
     const filings = await secEdgar.getCompanyFilings(cik, daysBack);
 
-    const enrichedFilings = [];
+    // Single batch query: get ALL known filings for this CIK from the DB
+    const accessionNumbers = filings.map(f => f.accessionNumber);
+    const existingResult = await pool.query(
+      `SELECT f.*, uf.read
+       FROM filings f
+       LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
+       WHERE f.accession_number = ANY($2)`,
+      [req.user.id, accessionNumbers]
+    );
 
-    for (const filing of filings) {
+    // Build lookup map: accession_number → DB row
+    const existingMap = {};
+    for (const row of existingResult.rows) {
+      existingMap[row.accession_number] = row;
+    }
+
+    // Enrich filings from DB — NO AI calls, NO SEC EDGAR text fetching
+    const enrichedFilings = filings.map(filing => {
+      const existing = existingMap[filing.accessionNumber];
+      const priority = aiAnalysis.getFilingPriority(filing.formType);
+
+      if (existing && existing.ai_summary) {
+        // Has analysis — return fully enriched data from DB
+        return {
+          ...filing, ticker,
+          ai_summary: existing.ai_summary,
+          ai_detailed_summary: existing.ai_detailed_summary,
+          sentiment_direction: existing.sentiment_direction,
+          expected_move_min: existing.expected_move_min,
+          expected_move_max: existing.expected_move_max,
+          expected_move_avg: existing.expected_move_avg,
+          confidence_score: existing.confidence_score,
+          bullish_factors: existing.bullish_factors,
+          bearish_factors: existing.bearish_factors,
+          ai_consensus: existing.ai_consensus,
+          short_interest_percent: existing.short_interest_percent,
+          numbers_confidence: existing.numbers_confidence,
+          pro_analysis: existing.pro_analysis,
+          read: existing.read || false,
+          priority
+        };
+      }
+
+      // No analysis — return basic filing data (user can Re-analyse)
+      return {
+        ...filing, ticker,
+        read: existing?.read || false,
+        priority
+      };
+    });
+
+    // Batch ensure user_filings links exist for known DB filings
+    const existingIds = existingResult.rows.map(r => r.id);
+    if (existingIds.length > 0) {
+      await pool.query(
+        `INSERT INTO user_filings (user_id, filing_id, read)
+         SELECT $1, unnest($2::int[]), false
+         ON CONFLICT (user_id, filing_id) DO NOTHING`,
+        [req.user.id, existingIds]
+      );
+    }
+
+    // Insert basic DB records for NEW filings (no analysis, just metadata)
+    const newFilings = filings.filter(f => !existingMap[f.accessionNumber]);
+    for (const filing of newFilings) {
       try {
-        // Check shared filings table
-        const existing = await pool.query(
-          `SELECT f.*, uf.read
-           FROM filings f
-           LEFT JOIN user_filings uf ON uf.filing_id = f.id AND uf.user_id = $1
-           WHERE f.accession_number = $2`,
-          [req.user.id, filing.accessionNumber]
-        );
-
-        let filingData = { ...filing, ticker };
-
-        if (existing.rows.length > 0) {
-          const existingFiling = existing.rows[0];
-
-          // Ensure user link exists
-          await pool.query(
-            `INSERT INTO user_filings (user_id, filing_id, read)
-             VALUES ($1, $2, false)
-             ON CONFLICT (user_id, filing_id) DO NOTHING`,
-            [req.user.id, existingFiling.id]
-          );
-
-          if (existingFiling.ai_summary) {
-            filingData = {
-              ...filing,
-              ticker,
-              ai_summary: existingFiling.ai_summary,
-              ai_detailed_summary: existingFiling.ai_detailed_summary,
-              sentiment_direction: existingFiling.sentiment_direction,
-              expected_move_min: existingFiling.expected_move_min,
-              expected_move_max: existingFiling.expected_move_max,
-              expected_move_avg: existingFiling.expected_move_avg,
-              confidence_score: existingFiling.confidence_score,
-              bullish_factors: existingFiling.bullish_factors,
-              bearish_factors: existingFiling.bearish_factors,
-              ai_consensus: existingFiling.ai_consensus,
-              short_interest_percent: existingFiling.short_interest_percent,
-              numbers_confidence: existingFiling.numbers_confidence,
-              pro_analysis: existingFiling.pro_analysis,
-              read: existingFiling.read || false,
-              priority: aiAnalysis.getFilingPriority(filing.formType)
-            };
-            enrichedFilings.push(filingData);
-            continue;
-          }
-        }
-
-        // No analysis — run AI
-        const priority = aiAnalysis.getFilingPriority(filing.formType);
-        filingData.priority = priority;
-
-        try {
-          const filingText = await secEdgar.parseFilingContent(
-            filing.accessionNumber, filing.cik, filing.primaryDocument
-          );
-
-          const analysis = await aiAnalysis.analyzeFiling(
-            filingText, filing.company, filing.formType, ticker, aiPreferences, personaPreferences
-          );
-
-          if (analysis) {
-            const shortData = await shortInterest.getShortInterest(ticker);
-
-            filingData = {
-              ...filing, ticker, ...analysis,
-              ai_summary: analysis.brief_summary,
-              short_interest_percent: shortData?.short_volume_percent || null,
-              read: false, priority
-            };
-
-            const insertResult = await pool.query(
-              `INSERT INTO filings (
-                cik, form_type, filed_date, description, accession_number,
-                company, primary_document, report_date, ai_summary, ai_detailed_summary,
-                sentiment_direction, expected_move_min, expected_move_max, expected_move_avg,
-                confidence_score, bullish_factors, bearish_factors, ai_consensus,
-                short_interest_percent, short_interest_updated_at, numbers_confidence, pro_analysis, analysis_generated_at
-              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
-              ON CONFLICT (accession_number) DO UPDATE SET
-                ai_summary = EXCLUDED.ai_summary, ai_detailed_summary = EXCLUDED.ai_detailed_summary,
-                sentiment_direction = EXCLUDED.sentiment_direction,
-                expected_move_min = EXCLUDED.expected_move_min, expected_move_max = EXCLUDED.expected_move_max,
-                expected_move_avg = EXCLUDED.expected_move_avg, confidence_score = EXCLUDED.confidence_score,
-                bullish_factors = EXCLUDED.bullish_factors, bearish_factors = EXCLUDED.bearish_factors,
-                ai_consensus = EXCLUDED.ai_consensus, short_interest_percent = EXCLUDED.short_interest_percent,
-                short_interest_updated_at = EXCLUDED.short_interest_updated_at,
-                numbers_confidence = EXCLUDED.numbers_confidence, pro_analysis = EXCLUDED.pro_analysis,
-                analysis_generated_at = NOW()
-              RETURNING id`,
-              [filing.cik, filing.formType, filing.filedDate, filing.description,
-               filing.accessionNumber, filing.company, filing.primaryDocument, filing.reportDate,
-               analysis.brief_summary, analysis.detailed_summary, analysis.sentiment_direction,
-               analysis.expected_move_min, analysis.expected_move_max, analysis.expected_move_avg,
-               analysis.confidence_score, analysis.bullish_factors, analysis.bearish_factors,
-               JSON.stringify(analysis.ai_consensus), shortData?.short_volume_percent || null,
-               shortData?.updated_at || null, analysis.numbers_confidence || 'low',
-               analysis.pro_analysis ? JSON.stringify(analysis.pro_analysis) : null]
-            );
-
-            await pool.query(
-              `INSERT INTO user_filings (user_id, filing_id, read)
-               VALUES ($1, $2, false)
-               ON CONFLICT (user_id, filing_id) DO NOTHING`,
-              [req.user.id, insertResult.rows[0].id]
-            );
-          } else {
-            await ensureFilingAndLink(req.user.id, filing);
-          }
-        } catch (analysisError) {
-          console.error('⚠️ Analysis error:', analysisError.message);
-          await ensureFilingAndLink(req.user.id, filing);
-        }
-
-        enrichedFilings.push(filingData);
-      } catch (filingError) {
-        console.error('⚠️ Error processing filing:', filingError.message);
-        enrichedFilings.push({ ...filing, ticker, priority: aiAnalysis.getFilingPriority(filing.formType) });
+        await ensureFilingAndLink(req.user.id, filing);
+      } catch (e) {
+        // Non-critical — filing will be linked on next visit
       }
     }
 
