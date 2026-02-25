@@ -13,6 +13,25 @@ class AIAnalysisService {
     this.pool = pool;
   }
 
+  // Fetch with automatic retry on transient errors (429, 529, 503)
+  async fetchWithRetry(url, options, maxRetries = 2) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const response = await fetch(url, options);
+
+      if (response.ok || attempt === maxRetries) return response;
+
+      const status = response.status;
+      // Only retry on transient errors
+      if (status !== 429 && status !== 529 && status !== 503) return response;
+
+      // Check Retry-After header, otherwise use exponential backoff
+      const retryAfter = response.headers.get('retry-after');
+      const waitMs = retryAfter ? parseInt(retryAfter) * 1000 : Math.pow(2, attempt + 1) * 1000; // 2s, 4s
+      console.log(`⏳ ${status} — retrying in ${waitMs / 1000}s (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+  }
+
   // Get filing priority information
   getFilingPriority(formType) {
     const priorities = {
@@ -364,7 +383,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await this.fetchWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -420,7 +439,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.geminiKey}`, {
+      const response = await this.fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.geminiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -472,7 +491,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
-      const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      const response = await this.fetchWithRetry('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
