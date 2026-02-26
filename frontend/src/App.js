@@ -47,6 +47,7 @@ function App() {
   const [tickerFilingsLoading, setTickerFilingsLoading] = useState({});
   const [hideRead, setHideRead] = useState(false);
   const [expandedFiling, setExpandedFiling] = useState(null);
+  const [daysBack, setDaysBack] = useState(90);
   // Stock prices
   const [stockPrices, setStockPrices] = useState({});
   // Unread filter (when clicking the Unread tile)
@@ -91,11 +92,12 @@ function App() {
   };
 
   // Load filings for a single CIK when expanding
-  const loadTickerFilings = async (cik) => {
+  const loadTickerFilings = async (cik, overrideDays) => {
     if (tickerFilingsLoading[cik]) return;
+    const days = overrideDays || daysBack;
     setTickerFilingsLoading(prev => ({ ...prev, [cik]: true }));
     try {
-      const r = await apiFetch(`/api/sec/filings/${cik}?daysBack=90`);
+      const r = await apiFetch(`/api/sec/filings/${cik}?daysBack=${days}`);
       if (r.ok) {
         const data = await r.json();
         setTickerFilings(prev => ({ ...prev, [cik]: data }));
@@ -399,6 +401,7 @@ function App() {
             toggleSelectAll={toggleSelectAll} bulkMarkAsRead={bulkMarkAsRead} bulkMarkAsUnread={bulkMarkAsUnread}
             typeFilter={typeFilter} setTypeFilter={setTypeFilter}
             reanalyzeFiling={reanalyzeFiling} reanalyzing={reanalyzing} reanalyzeError={reanalyzeError}
+            daysBack={daysBack} setDaysBack={setDaysBack} loadTickerFilings={loadTickerFilings}
           />
         )}
 
@@ -431,7 +434,7 @@ function isBigInsider(f) {
   return move >= 2 || conf >= 75;
 }
 
-function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter, reanalyzeFiling, reanalyzing, reanalyzeError }) {
+function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, toggleTicker, tickerFilings, tickerFilingsLoading, hideRead, setHideRead, markAsRead, markAsUnread, expandedFiling, setExpandedFiling, stockPrices, unreadFilter, setUnreadFilter, selectedFilings, toggleFilingSelection, toggleSelectAll, bulkMarkAsRead, bulkMarkAsUnread, typeFilter, setTypeFilter, reanalyzeFiling, reanalyzing, reanalyzeError, daysBack, setDaysBack, loadTickerFilings }) {
   return (
     <div>
       {/* Summary cards */}
@@ -549,6 +552,17 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                         ))}
                         <span style={{ color: '#999', fontSize: '0.8rem', marginLeft: '0.25rem' }}>{visibleFilings.length} filing{visibleFilings.length !== 1 ? 's' : ''}</span>
 
+                        {/* Days range selector */}
+                        <span style={{ color: '#bbb', fontSize: '0.85rem', marginLeft: '0.5rem' }}>|</span>
+                        {[7, 30, 90, 365].map(d => (
+                          <button key={d} onClick={(e) => { e.stopPropagation(); if (d !== daysBack) { setDaysBack(d); loadTickerFilings(t.cik, d); } }}
+                            style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer',
+                              background: daysBack === d ? '#444' : 'white', color: daysBack === d ? 'white' : '#888',
+                              border: `1px solid ${daysBack === d ? '#444' : '#ddd'}`, fontWeight: daysBack === d ? '600' : '400' }}>
+                            {d === 365 ? '1Y' : `${d}D`}
+                          </button>
+                        ))}
+
                         {/* Select all + bulk actions (right side) */}
                         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                           {visibleFilings.length > 0 && (
@@ -581,7 +595,7 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                       <div style={{ textAlign: 'center', padding: '1.5rem', color: '#999', fontSize: '0.9rem' }}>
                         {hideRead && typeFiltered.length > 0 ? 'All filings marked as read. Toggle "Show all" to see them.'
                           : typeFilter !== 'all' && filings.length > 0 ? `No ${typeFilter === 'insider-big' ? 'big insider' : typeFilter === 'insider-routine' ? 'routine insider' : typeFilter} filings found. Try a different filter.`
-                          : 'No filings in the last 90 days.'}
+                          : `No filings in the last ${daysBack} days.`}
                       </div>
                     )}
                     {!isLoadingFilings && visibleFilings.map(f => {
