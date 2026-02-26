@@ -45,9 +45,9 @@ function App() {
   const [expandedTicker, setExpandedTicker] = useState(null);
   const [tickerFilings, setTickerFilings] = useState({});
   const [tickerFilingsLoading, setTickerFilingsLoading] = useState({});
-  const [hideRead, setHideRead] = useState(false);
+  const [hideRead, setHideRead] = useState(true);
   const [expandedFiling, setExpandedFiling] = useState(null);
-  const [daysBack, setDaysBack] = useState(90);
+  const [daysBack, setDaysBack] = useState(7);
   // Stock prices
   const [stockPrices, setStockPrices] = useState({});
   // Unread filter (when clicking the Unread tile)
