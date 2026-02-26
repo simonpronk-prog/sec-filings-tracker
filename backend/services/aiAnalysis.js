@@ -105,9 +105,12 @@ Extract these KPIs if present in the filing:
 
       event_report: `MATERIAL EVENT ANALYSIS (8-K):
 Identify the specific event type and assess its market impact.
+If this is an EARNINGS event (quarterly or annual results), extract the same financial KPIs you would for a 10-K/10-Q: revenue, EPS, margins, guidance, etc.
 Extract these KPIs if present:
 - Event type (earnings, M&A, leadership change, restructuring, new contract, etc.)
 - Event description
+- Revenue, EPS, and growth rates (especially for earnings events)
+- Management guidance (if provided)
 - Deal value (if M&A)
 - Financial impact stated
 - Effective date
@@ -184,6 +187,11 @@ Extract any financial metrics, dates, or material facts present.`
       event_report: `"kpis": {
     "event_type": "earnings/merger/leadership_change/restructuring/contract/other",
     "event_description": "one sentence",
+    "revenue": "exact figure or null (if earnings event)",
+    "revenue_yoy_change": "percentage or null",
+    "eps": "exact figure or null (if earnings event)",
+    "eps_yoy_change": "percentage or null",
+    "guidance": "management guidance summary or null",
     "deal_value": "exact figure or null",
     "financial_impact": "description or null",
     "effective_date": "date or null",
@@ -262,7 +270,13 @@ Extract any financial metrics, dates, or material facts present.`
     let personaTakesTemplate = '';
 
     if (personas.length > 0) {
-      personaSection = `\n\nANALYST PANEL — You have access to the analytical frameworks of these market professionals. Channel each one's perspective when crafting their "take":\n`;
+      personaSection = `\n\nANALYST PANEL — You are simulating a virtual analyst desk. Each analyst below MUST:
+1. Extract values for THEIR specific key metrics from the filing data (use null if the metric is not found in the filing)
+2. Provide a 3-4 sentence substantive take in their voice, referencing the specific numbers they found
+3. Give their own independent sentiment, confidence score, and verdict (Buy/Hold/Sell/Avoid)
+4. Assess each of their metrics as positive/negative/neutral based on their analytical framework
+
+IMPORTANT: Analysts may DISAGREE with each other. That is expected and valuable — each applies their own framework independently.\n`;
 
       for (const p of personas) {
         const metrics = Array.isArray(p.key_metrics) ? p.key_metrics.join(', ') : p.key_metrics;
@@ -272,9 +286,23 @@ Extract any financial metrics, dates, or material facts present.`
 - Communication style: ${p.style}\n`;
       }
 
-      const takesEntries = personas.map(p =>
-        `    {"persona": "${p.short_name}", "name": "${p.name}", "emoji": "${p.emoji}", "take": "1-2 sentence take in ${p.name}'s voice and style, referencing what THEY would focus on from this filing"}`
-      ).join(',\n');
+      const takesEntries = personas.map(p => {
+        const metricsList = Array.isArray(p.key_metrics) ? p.key_metrics : [];
+        const metricsTemplate = metricsList.slice(0, 6).map(m =>
+          `{"label": "${m}", "value": "extracted value from filing or null", "assessment": "positive/negative/neutral"}`
+        ).join(', ');
+
+        return `    {
+      "persona": "${p.short_name}",
+      "name": "${p.name}",
+      "emoji": "${p.emoji}",
+      "sentiment": "bullish/bearish/neutral",
+      "confidence": 75,
+      "verdict": "Buy/Hold/Sell/Avoid",
+      "take": "3-4 sentence substantive analysis in ${p.name}'s voice and style. Reference specific numbers from the filing that relate to their key metrics. Explain WHY this matters for the stock.",
+      "metrics": [${metricsTemplate}]
+    }`;
+      }).join(',\n');
 
       personaTakesTemplate = `"persona_takes": [\n${takesEntries}\n  ]`;
     } else {
@@ -392,7 +420,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 4096,
+          max_tokens: 6144,
           messages: [{
             role: 'user',
             content: prompt
@@ -499,7 +527,7 @@ IMPORTANT: Return ONLY the JSON object. No markdown code fences, no explanatory 
         },
         body: JSON.stringify({
           model: 'grok-3',
-          max_tokens: 4096,
+          max_tokens: 6144,
           messages: [{
             role: 'user',
             content: prompt

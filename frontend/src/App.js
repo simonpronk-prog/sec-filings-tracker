@@ -686,6 +686,65 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                                     </div>
                                   )}
 
+                                  {/* The Analyst Desk — Persona Takes (promoted to position 2) */}
+                                  {pro.persona_takes?.length > 0 && (
+                                    <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
+                                      <div style={{ fontWeight: '700', fontSize: '1.05rem', marginBottom: '1rem', color: '#1a1a2e', borderBottom: '2px solid #667eea', paddingBottom: '0.5rem' }}>🎙️ The Analyst Desk</div>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                        {pro.persona_takes.map((pt, i) => {
+                                          const sentColor = pt.sentiment === 'bullish' ? '#28a745' : pt.sentiment === 'bearish' ? '#dc3545' : '#666';
+                                          const sentBg = pt.sentiment === 'bullish' ? '#e8f5e9' : pt.sentiment === 'bearish' ? '#ffebee' : '#f5f5f5';
+                                          const verdictColors = { 'Buy': '#28a745', 'Hold': '#ff9800', 'Sell': '#dc3545', 'Avoid': '#dc3545' };
+                                          const verdictColor = verdictColors[pt.verdict] || '#666';
+                                          return (
+                                            <div key={i} style={{ padding: '1rem', background: '#fafbff', borderRadius: '8px', border: '1px solid #e8eaf6', borderLeft: `4px solid ${sentColor}` }}>
+                                              {/* Header: name + badges */}
+                                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                <div style={{ fontWeight: '700', fontSize: '1rem', color: '#1a1a2e' }}>{pt.emoji} {pt.name}</div>
+                                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                  {pt.sentiment && (
+                                                    <span style={{ padding: '0.2rem 0.6rem', background: sentBg, color: sentColor, borderRadius: '12px', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase' }}>
+                                                      {pt.sentiment === 'bullish' ? '⬆️' : pt.sentiment === 'bearish' ? '⬇️' : '➡️'} {pt.sentiment}
+                                                    </span>
+                                                  )}
+                                                  {pt.confidence && <span style={{ fontSize: '0.75rem', color: '#888' }}>{pt.confidence}%</span>}
+                                                  {pt.verdict && (
+                                                    <span style={{ padding: '0.2rem 0.6rem', background: verdictColor, color: 'white', borderRadius: '4px', fontSize: '0.75rem', fontWeight: '700' }}>
+                                                      {String(pt.verdict).toUpperCase()}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                              {/* Per-persona metrics grid */}
+                                              {pt.metrics?.length > 0 && (() => {
+                                                const validMetrics = pt.metrics.filter(m => m.value && String(m.value) !== 'null' && String(m.value) !== 'N/A');
+                                                if (validMetrics.length === 0) return null;
+                                                return (
+                                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                    {validMetrics.map((m, mi) => {
+                                                      const assessColor = m.assessment === 'positive' ? '#28a745' : m.assessment === 'negative' ? '#dc3545' : '#ff9800';
+                                                      return (
+                                                        <div key={mi} style={{ padding: '0.4rem 0.6rem', background: '#fff', borderRadius: '6px', border: '1px solid #eee' }}>
+                                                          <div style={{ fontSize: '0.65rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{String(m.label).replace(/_/g, ' ')}</div>
+                                                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginTop: '0.15rem' }}>
+                                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: assessColor, flexShrink: 0 }} />
+                                                            <span style={{ fontSize: '0.85rem', fontWeight: '600', color: '#1a1a2e' }}>{String(m.value)}</span>
+                                                          </div>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                );
+                                              })()}
+                                              {/* Substantive take */}
+                                              <div style={{ fontSize: '0.88rem', color: '#333', lineHeight: '1.6', fontStyle: 'italic', borderTop: '1px solid #eee', paddingTop: '0.6rem' }}>"{pt.take}"</div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+
                                   {/* KPI Grid */}
                                   {pro.kpis && Object.keys(pro.kpis).length > 0 && (
                                     <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
@@ -709,23 +768,6 @@ function Dashboard({ dashboard, loading, sentiment, onRefresh, expandedTicker, t
                                           ))}
                                         </div>
                                       )}
-                                    </div>
-                                  )}
-
-                                  {/* The Desk — Persona Takes */}
-                                  {pro.persona_takes?.length > 0 && (
-                                    <div style={{ padding: '1rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', marginBottom: '0.75rem' }}>
-                                      <div style={{ fontWeight: '700', fontSize: '0.95rem', marginBottom: '0.75rem', color: '#1a1a2e' }}>🎙️ The Desk</div>
-                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.5rem' }}>
-                                        {pro.persona_takes.map((pt, i) => (
-                                          <div key={i} style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #eee' }}>
-                                            <div style={{ fontWeight: '600', fontSize: '0.85rem', marginBottom: '0.35rem', color: '#1a1a2e' }}>
-                                              {pt.emoji} {pt.name}
-                                            </div>
-                                            <div style={{ fontSize: '0.85rem', color: '#444', lineHeight: '1.5', fontStyle: 'italic' }}>"{pt.take}"</div>
-                                          </div>
-                                        ))}
-                                      </div>
                                     </div>
                                   )}
 
